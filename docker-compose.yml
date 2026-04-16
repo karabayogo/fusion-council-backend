@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   fusion-council-api:
     build: .
@@ -21,7 +19,7 @@ services:
   fusion-council-worker:
     build: .
     container_name: fusion-council-worker
-    command: ["python", "-m", "fusion_council_service.domain.worker_loop"]
+    command: ["python", "-m", "fusion_council_service.domain"]
     volumes:
       - fusion-council-data:/app/data
       - ./config:/app/config:ro
