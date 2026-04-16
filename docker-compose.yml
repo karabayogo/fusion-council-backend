@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  fusion-council-api:
+    build: .
+    container_name: fusion-council-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - fusion-council-data:/app/data
+      - ./config:/app/config:ro
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  fusion-council-worker:
+    build: .
+    container_name: fusion-council-worker
+    command: ["python", "-m", "fusion_council_service.domain.worker_loop"]
+    volumes:
+      - fusion-council-data:/app/data
+      - ./config:/app/config:ro
+    env_file:
+      - .env
+    depends_on:
+      fusion-council-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  fusion-council-data:
