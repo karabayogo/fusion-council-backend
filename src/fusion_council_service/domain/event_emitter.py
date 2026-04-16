@@ -88,3 +88,12 @@ def emit_candidate_failed(db: sqlite3.Connection, run_id: str, candidate_id: str
     return emit_event(db, run_id, "candidate.failed", {
         "run_id": run_id, "candidate_id": candidate_id, "alias": alias, "stage": stage, "error": error,
     })
+
+
+def emit_run_succeeded_degraded(db: sqlite3.Connection, run_id: str, final_answer: str,
+                                   degraded_reason: str, confidence: float = None) -> dict:
+    """Emit a succeeded_degraded event when deadline pressure forces early finalization."""
+    payload = {"run_id": run_id, "final_answer": final_answer, "degraded_reason": degraded_reason}
+    if confidence is not None:
+        payload["confidence"] = confidence
+    return emit_event(db, run_id, "run.succeeded_degraded", payload)

@@ -121,17 +121,17 @@ def should_degrade(mode: str, elapsed_seconds: float, total_seconds: int) -> Opt
         if elapsed_seconds > total_seconds * 0.80:
             return "single_approaching_deadline"
     elif mode == "fusion":
-        if elapsed_seconds > total_seconds * 0.85:
-            return "fusion_approaching_deadline_skip_verification"
         if elapsed_seconds > total_seconds * 0.95:
             return "fusion_deadline_imminent_return_best_candidate"
+        if elapsed_seconds > total_seconds * 0.85:
+            return "fusion_approaching_deadline_skip_verification"
     elif mode == "council":
-        if elapsed_seconds > total_seconds * 0.80:
-            return "council_skip_debate"
-        if elapsed_seconds > total_seconds * 0.90:
-            return "council_skip_peer_review"
         if elapsed_seconds > total_seconds * 0.95:
             return "council_deadline_imminent_return_best_opinion"
+        if elapsed_seconds > total_seconds * 0.90:
+            return "council_skip_peer_review"
+        if elapsed_seconds > total_seconds * 0.80:
+            return "council_skip_debate"
     return None
 
 

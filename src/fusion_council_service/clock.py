@@ -16,3 +16,8 @@ def utc_now_plus_seconds(seconds: int) -> str:
 def iso_now() -> str:
     """Alias for utc_now_iso for convenience."""
     return utc_now_iso()
+
+
+def parse_iso(iso_str: str) -> datetime:
+    """Parse an ISO-8601 timestamp string back to a datetime object."""
+    return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))

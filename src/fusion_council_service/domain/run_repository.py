@@ -81,7 +81,7 @@ def claim_next_run(db: sqlite3.Connection) -> Optional[dict]:
             UPDATE runs SET status = 'running', started_at = ?
             WHERE run_id = ? AND status = 'queued'
             """,
-            (None, run_id),  # started_at set by worker
+            (None, run_id),  # started_at set by worker when it actually begins execution
         )
         if cursor.rowcount == 0:
             # Another worker claimed it first
