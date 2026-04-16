@@ -133,9 +133,13 @@ def validate_ollama_models(api_key: str, base_url: str, expected_models: list[st
         )
         response.raise_for_status()
         available = {m["name"] for m in response.json().get("models", [])}
+        # Also build a set of base names (without :tag suffix) for fuzzy matching
+        available_bases = {n.split(":")[0] for n in available}
         for model_name in expected_models:
-            # Ollama tags may include :latest suffix
-            found = model_name in available or f"{model_name}:latest" in available
+            base_name = model_name.split(":")[0]
+            found = (model_name in available
+                     or f"{model_name}:latest" in available
+                     or base_name in available_bases)
             if not found:
                 errors[model_name] = f"Model '{model_name}' not found in Ollama cloud"
         if not errors:

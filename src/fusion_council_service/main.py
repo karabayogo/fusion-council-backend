@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +18,9 @@ from fusion_council_service.db import initialize_schema
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
 from fusion_council_service.providers.registry import build_provider_registry
+
+# Load .env file before any settings access
+load_dotenv()
 
 setup_logging()
 logger = get_logger("fusion_council_service")

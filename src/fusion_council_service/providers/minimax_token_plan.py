@@ -10,6 +10,16 @@ from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.providers.minimax")
 
+# MiniMax-M2.7 returns ThinkingBlock + TextBlock via the Anthropic API.
+# The thinking budget is carved out of max_tokens, so low max_tokens values
+# (e.g. 50) can result in the entire budget being consumed by thinking
+# with nothing left for the actual text response. We enforce a minimum
+# max_tokens of 256 to ensure room for both thinking and text output.
+MINIMAX_MIN_MAX_TOKENS = 256
+
+# Maximum retries when thinking consumes the entire token budget
+MAX_THINKING_RETRIES = 1
+
 
 class MiniMaxTokenPlanProvider:
     """Calls MiniMax via Anthropic-compatible SDK with custom base URL."""
@@ -30,9 +40,12 @@ class MiniMaxTokenPlanProvider:
                 # Anthropic SDK passes system as a separate param
                 pass
 
+            # Enforce minimum max_tokens to leave room for text after thinking
+            effective_max_tokens = max(request.max_output_tokens, MINIMAX_MIN_MAX_TOKENS)
+
             kwargs = {
                 "model": request.provider_model,
-                "max_tokens": request.max_output_tokens,
+                "max_tokens": effective_max_tokens,
                 "temperature": request.temperature,
                 "messages": [{"role": "user", "content": request.user_prompt}],
             }
@@ -42,7 +55,23 @@ class MiniMaxTokenPlanProvider:
             response = self._client.messages.create(**kwargs)
             latency_ms = int((time.monotonic() - start) * 1000)
 
-            raw_text = response.content[0].text if response.content else ""
+            # Anthropic SDK may return ThinkingBlock + TextBlock; extract last TextBlock
+            text_blocks = [b for b in response.content if getattr(b, 'text', None) is not None]
+            raw_text = text_blocks[-1].text if text_blocks else ""
+
+            # If thinking consumed the entire budget (stop_reason=max_tokens, no text),
+            # retry once with double the max_tokens
+            if not raw_text and response.stop_reason == "max_tokens" and MAX_THINKING_RETRIES > 0:
+                logger.warning(
+                    f"MiniMax thinking consumed all {effective_max_tokens} tokens, "
+                    f"retrying with {effective_max_tokens * 2}"
+                )
+                kwargs["max_tokens"] = effective_max_tokens * 2
+                response = self._client.messages.create(**kwargs)
+                latency_ms = int((time.monotonic() - start) * 1000)
+                text_blocks = [b for b in response.content if getattr(b, 'text', None) is not None]
+                raw_text = text_blocks[-1].text if text_blocks else ""
+
             input_tokens = response.usage.input_tokens if response.usage else None
             output_tokens = response.usage.output_tokens if response.usage else None
 

@@ -7,6 +7,9 @@ import os
 # Add src to path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fusion_council_service.config import Settings
 from fusion_council_service.db import open_db_connection, initialize_schema
 from fusion_council_service.domain.worker_loop import Worker
