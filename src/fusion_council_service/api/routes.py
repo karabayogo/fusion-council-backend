@@ -136,6 +136,31 @@ async def create_run(
     )
 
 
+@router.get("/v1/runs/{run_id}/answers")
+async def get_run_answers(
+    run_id: str,
+    auth=Depends(get_auth_dependency()),
+):
+    """Return raw candidate answers and intermediate artifacts for a run."""
+    from fusion_council_service.domain.candidate_repository import list_candidates_for_run
+
+    token, role = auth
+    db = get_api_db()
+
+    run = get_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    candidates = list_candidates_for_run(db, run_id)
+    return {
+        "run_id": run_id,
+        "mode": run["mode"],
+        "status": run["status"],
+        "candidates": candidates,
+        "count": len(candidates),
+    }
+
+
 @router.post("/v1/runs/{run_id}/cancel")
 async def cancel_run(
     run_id: str,

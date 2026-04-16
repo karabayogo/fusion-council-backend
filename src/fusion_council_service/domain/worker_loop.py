@@ -17,7 +17,7 @@ from fusion_council_service.domain.candidate_repository import insert_candidate,
 from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_finalizing,
-    emit_run_started, emit_stage_progress, emit_stage_started,
+    emit_run_started, emit_run_succeeded_degraded, emit_stage_progress, emit_stage_started,
 )
 from fusion_council_service.domain.event_repository import get_next_seq
 from fusion_council_service.domain.run_repository import claim_next_run, get_run, update_run_status
@@ -82,6 +82,56 @@ class Worker:
             return 0.0
         return min(100.0, (models_completed / models_planned) * 100.0)
 
+    def _elapsed_seconds(self, run: dict) -> float:
+        """Seconds elapsed since the run started."""
+        started = run.get("started_at") or run.get("created_at")
+        if not started:
+            return 0.0
+        from fusion_council_service.clock import parse_iso
+        try:
+            start_dt = parse_iso(started)
+            return (time.time() - start_dt.timestamp())
+        except Exception:
+            return 0.0
+
+    def _check_deadline(self, run: dict) -> Optional[str]:
+        """Check if deadline pressure should trigger degradation.
+        Returns degradation reason or None.
+        """
+        elapsed = self._elapsed_seconds(run)
+        total = run.get("deadline_seconds", 60)
+        return should_degrade(run["mode"], elapsed, total)
+
+    async def _finalize_degraded(self, db: sqlite3.Connection, run_id: str, mode: str,
+                                   reason: str, best_text: str, confidence: float = 0.5) -> None:
+        """Finalize a run as succeeded_degraded due to deadline pressure."""
+        logger.info(f"Finalizing as succeeded_degraded: {reason}", run_id=run_id)
+        now = utc_now_iso()
+        db.execute(
+            "UPDATE runs SET status='succeeded_degraded', finished_at=?, final_answer=?, "
+            "final_confidence=?, degraded_reason=? WHERE run_id=?",
+            (now, best_text, confidence, reason, run_id),
+        )
+        db.commit()
+        emit_run_succeeded_degraded(db, run_id, best_text, reason, confidence=confidence)
+        update_run_status(db, run_id, "succeeded_degraded", final_answer=best_text,
+                          final_confidence=confidence, degraded_reason=reason)
+
+    def _try_fallback(self, db: sqlite3.Connection, run: dict, failed_alias: str) -> Optional[dict]:
+        """Try to promote a fallback model for a failed primary.
+        Returns the fallback model dict or None.
+        """
+        mode = run["mode"]
+        from fusion_council_service.model_catalog import FUSION_FALLBACK_QUEUE, COUNCIL_FALLBACK_QUEUE
+        fallback_queue = COUNCIL_FALLBACK_QUEUE if mode == "council" else FUSION_FALLBACK_QUEUE
+        for alias in fallback_queue:
+            m = self._catalog.get(alias)
+            if m and m.get("enabled", False):
+                emit_fallback_promoted(db, run["run_id"], alias, failed_alias)
+                logger.info(f"Fallback promoted: {alias} replacing {failed_alias}", run_id=run["run_id"])
+                return m
+        return None
+
     async def _call_provider_async(self, request, db: sqlite3.Connection, run_id: str):
         """Call provider in thread pool and return result."""
         loop = asyncio.get_event_loop()
@@ -137,6 +187,33 @@ class Worker:
                              model["provider_model"], "generation", "failed", utc_now_iso())
             update_candidate_result(db, candidate_id, "failed", error_code=err_code, error_message=err_msg)
             emit_candidate_failed(db, run_id, candidate_id, model["alias"], "generation", err_msg or err_code)
+            # Try fallback for single mode
+            fallback = self._try_fallback(db, run, model["alias"])
+            if fallback:
+                fallback_req = ProviderGenerateRequest(
+                    alias=fallback["alias"], provider=fallback["provider"],
+                    provider_model=fallback["provider_model"],
+                    system_prompt=run.get("system_prompt"),
+                    user_prompt=run["prompt"],
+                    max_output_tokens=run["max_output_tokens"],
+                    temperature=run["temperature"],
+                )
+                fb_candidate_id = new_candidate_id()
+                fb_ok, fb_txt, fb_ec, fb_em, fb_lat, fb_in, fb_out = await self._call_provider_async(fallback_req, db, run_id)
+                if fb_ok:
+                    insert_candidate(db, run_id, fb_candidate_id, fallback["alias"], fallback["provider"],
+                                     fallback["provider_model"], "generation", "succeeded", utc_now_iso())
+                    update_candidate_result(db, fb_candidate_id, "succeeded", raw_text=fb_txt,
+                                            latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
+                    emit_candidate_completed(db, run_id, fb_candidate_id, fallback["alias"], "generation")
+                    db.execute(
+                        "UPDATE runs SET status='succeeded', finished_at=?, final_answer=? WHERE run_id=?",
+                        (utc_now_iso(), fb_txt, run_id),
+                    )
+                    db.commit()
+                    emit_run_completed(db, run_id, fb_txt)
+                    update_run_status(db, run_id, "succeeded")
+                    return
             await self._fail_run(db, run_id, err_code or "PROVIDER_FAILED", err_msg or "Single model failed")
 
     async def _run_fusion(self, db: sqlite3.Connection, run: dict) -> None:
@@ -199,8 +276,44 @@ class Worker:
                 emit_candidate_failed(db, run_id, cand_id, model["alias"], "generation", err_msg or err_code)
 
         succeeded = [c for c in gen_candidates if c.get("status") == "succeeded"]
+
+        # Deadline check after generation stage
+        degradation = self._check_deadline(run)
+        if degradation and succeeded:
+            best = select_best_candidate(succeeded)
+            best_text = best.get("raw_answer", "") if best else ""
+            await self._finalize_degraded(db, run_id, "fusion", degradation, best_text)
+            return
+
+        # Fallback promotion: if quorum not met, try fallbacks before failing
         if len(succeeded) < 2:
-            # Quorum not met
+            failed_aliases = [c.get("alias", "") for c in gen_candidates if c.get("status") == "failed"]
+            for failed_alias in failed_aliases:
+                fallback = self._try_fallback(db, run, failed_alias)
+                if fallback:
+                    fallback_req = ProviderGenerateRequest(
+                        alias=fallback["alias"], provider=fallback["provider"],
+                        provider_model=fallback["provider_model"],
+                        system_prompt=run.get("system_prompt"),
+                        user_prompt=run["prompt"],
+                        max_output_tokens=run["max_output_tokens"],
+                        temperature=run["temperature"],
+                    )
+                    cand_id = new_candidate_id()
+                    fb_success, fb_text, fb_ec, fb_em, fb_lat, fb_in, fb_out = await self._call_provider_async(fallback_req, db, run_id)
+                    if fb_success:
+                        insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
+                                         fallback["provider_model"], "generation", "succeeded", utc_now_iso())
+                        update_candidate_result(db, cand_id, "succeeded", raw_text=fb_text,
+                                                latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
+                        emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "generation")
+                        cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
+                        succeeded.append(dict(cursor.fetchone()))
+                    if len(succeeded) >= 2:
+                        break
+
+        if len(succeeded) < 2:
+            # Quorum not met even after fallbacks
             db.execute("UPDATE runs SET status='failed', error_code='FUSION_QUORUM_NOT_MET', finished_at=? WHERE run_id=?",
                        (utc_now_iso(), run_id))
             db.commit()
@@ -209,7 +322,15 @@ class Worker:
             return
 
         # Stage 2: synthesis
-        emit_stage_started(db, run_id, "synthesis", [synth_model["alias"] for synth_model in select_models_for_mode("fusion", self._catalog) if synth_model.get("role_bias") == "synthesis"][:1] if False else [])
+        # Deadline check before synthesis
+        degradation = self._check_deadline(run)
+        if degradation:
+            best = select_best_candidate(succeeded)
+            best_text = best.get("raw_answer", "") if best else ""
+            await self._finalize_degraded(db, run_id, "fusion", degradation, best_text)
+            return
+
+        emit_stage_started(db, run_id, "synthesis", [])
         synth_models = select_models_for_mode("fusion", self._catalog)
         synth_model = synth_models[0] if synth_models else models[0]
         synthesis_prompt = build_fusion_prompt(run["prompt"], succeeded)
@@ -237,6 +358,13 @@ class Worker:
             synthesis_text = succeeded[0].get("raw_answer", "") if succeeded else "No answer available."
 
         # Stage 3: verification
+        # Deadline check — skip verification if under deadline pressure
+        degradation = self._check_deadline(run)
+        if degradation:
+            # Deadline imminent — finalize with synthesis answer as succeeded_degraded
+            await self._finalize_degraded(db, run_id, "fusion", degradation, synthesis_text, confidence=0.5)
+            return
+
         emit_stage_started(db, run_id, "verification", [])
         verification_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         verif_models = select_models_for_mode("fusion", self._catalog)
@@ -326,12 +454,76 @@ class Worker:
                 emit_candidate_failed(db, run_id, cand_id, m["alias"], "first_opinion", err_msg or err_code)
 
         succeeded_opinions = [c for c in first_opinions if c.get("status") == "succeeded"]
+
+        # Deadline check after first opinions
+        degradation = self._check_deadline(run)
+        if degradation and succeeded_opinions:
+            best = select_best_candidate(succeeded_opinions)
+            best_text = best.get("raw_answer", "") if best else ""
+            await self._finalize_degraded(db, run_id, "council", degradation, best_text)
+            return
+
+        # Fallback promotion: if council quorum not met, try fallbacks
+        if len(succeeded_opinions) < 2:
+            failed_aliases = [c.get("alias", "") for c in first_opinions if c.get("status") == "failed"]
+            for failed_alias in failed_aliases:
+                fallback = self._try_fallback(db, run, failed_alias)
+                if fallback:
+                    fallback_req = ProviderGenerateRequest(
+                        alias=fallback["alias"], provider=fallback["provider"],
+                        provider_model=fallback["provider_model"],
+                        system_prompt=run.get("system_prompt"),
+                        user_prompt=run["prompt"],
+                        max_output_tokens=run["max_output_tokens"],
+                        temperature=run["temperature"],
+                    )
+                    cand_id = new_candidate_id()
+                    fb_ok, fb_txt, fb_ec, fb_em, fb_lat, fb_in, fb_out = await self._call_provider_async(fallback_req, db, run_id)
+                    if fb_ok:
+                        insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
+                                         fallback["provider_model"], "first_opinion", "succeeded", utc_now_iso())
+                        update_candidate_result(db, cand_id, "succeeded", raw_text=fb_txt,
+                                                latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
+                        emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "first_opinion")
+                        cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
+                        succeeded_opinions.append(dict(cursor.fetchone()))
+                    if len(succeeded_opinions) >= 2:
+                        break
+
         if len(succeeded_opinions) < 2:
             db.execute("UPDATE runs SET status='failed', error_code='COUNCIL_QUORUM_NOT_MET', finished_at=? WHERE run_id=?",
                        (utc_now_iso(), run_id))
             db.commit()
             emit_run_failed(db, run_id, "COUNCIL_QUORUM_NOT_MET", f"Only {len(succeeded_opinions)}/3 opinions succeeded")
             update_run_status(db, run_id, "failed", error_code="COUNCIL_QUORUM_NOT_MET")
+            return
+
+        # Deadline check — skip peer review if under heavy pressure
+        degradation = self._check_deadline(run)
+        if degradation and "skip_peer" in (degradation or ""):
+            # Skip peer reviews and debate, go straight to synthesis
+            emit_stage_started(db, run_id, "synthesis", [])
+            synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None)
+            synth_model = models[0]
+            request = ProviderGenerateRequest(
+                alias=synth_model["alias"], provider=synth_model["provider"],
+                provider_model=synth_model["provider_model"],
+                system_prompt=None, user_prompt=synth_prompt,
+                max_output_tokens=run["max_output_tokens"], temperature=0.2,
+            )
+            cand_id = new_candidate_id()
+            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
+            if success:
+                insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
+                                 synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
+                update_candidate_result(db, cand_id, "succeeded", raw_text=raw_text,
+                                        latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
+                emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
+                synthesis_text = raw_text
+            else:
+                best = select_best_candidate(succeeded_opinions)
+                synthesis_text = best.get("raw_answer", "") if best else "Council synthesis failed."
+            await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text)
             return
 
         # Stage 2: peer reviews
@@ -372,9 +564,14 @@ class Worker:
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
 
         # Stage 3: debate (conditionally)
-        debate_cands = []
-        agreement = compute_pairwise_agreement(succeeded_opinions)
-        debate_triggered = agreement < 0.55
+        # Deadline check — skip debate if under deadline pressure
+        degradation = self._check_deadline(run)
+        if degradation and "skip_debate" in (degradation or ""):
+            debate_triggered = False
+        else:
+            debate_cands = []
+            agreement = compute_pairwise_agreement(succeeded_opinions)
+            debate_triggered = agreement < 0.55
 
         if debate_triggered:
             emit_stage_started(db, run_id, "debate", [])
@@ -425,6 +622,12 @@ class Worker:
             synthesis_text = best.get("raw_answer", "") if best else "Council synthesis failed."
 
         # Stage 5: verification
+        # Deadline check — skip verification if deadline imminent
+        degradation = self._check_deadline(run)
+        if degradation:
+            await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text, confidence=0.5)
+            return
+
         emit_stage_started(db, run_id, "verification", [])
         verif_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         verif_model = models[1] if len(models) > 1 else models[0]

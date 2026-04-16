@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from fusion_council_service.api.routes import init_api, router
 from fusion_council_service.clock import utc_now_iso
