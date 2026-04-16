@@ -1,0 +1,32 @@
+[project]
+name = "fusion-council-service"
+version = "0.1.0"
+description = "Fusion Council Service — multi-LLM orchestration backend"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "anthropic",
+    "httpx",
+    "orjson",
+    "python-dotenv",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "pytest-cov",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
