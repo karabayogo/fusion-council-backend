@@ -93,7 +93,8 @@ def test_list_events_for_run_with_after_seq(tmp_db, run_with_events):
     events_after_1 = list_events_for_run(tmp_db, run_with_events, after_seq=1)
 
     assert len(events_after_0) >= 2
-    assert len(events_after_1) == 0 or events_after_1[-1]["seq"] == 1
+    assert len(events_after_1) == 1  # only stage.started (seq=2) is > 1
+    assert events_after_1[0]["seq"] == 2
 
 
 def test_sse_event_payload_parsed(tmp_db, run_with_events):

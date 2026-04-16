@@ -45,11 +45,14 @@ def select_best_candidate(candidates: list[dict]) -> Optional[dict]:
     """
     succeeded = [c for c in candidates if c.get("status") == "succeeded"]
     if not succeeded:
-        # All failed — pick the one with the longest error message (most info)
+        # All failed — pick the one with the longest answer (most info)
         failed = [c for c in candidates if c.get("status") == "failed"]
-        return failed[0] if failed else None
+        if not failed:
+            return None
+        failed.sort(key=lambda c: len(c.get("raw_answer", "") or ""), reverse=True)
+        return failed[0]
 
-    # For now, pick the succeeded candidate with the longest answer
+    # Pick the succeeded candidate with the longest answer
     succeeded.sort(key=lambda c: len(c.get("raw_answer", "") or ""), reverse=True)
     return succeeded[0]
 

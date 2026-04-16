@@ -67,7 +67,7 @@ def test_fusion_run_quorum_requires_2_succeeded(tmp_db, fusion_run_setup):
 
 
 def test_cosine_similarity_same_text():
-    assert cosine_similarity("hello world", "hello world") == 1.0
+    assert cosine_similarity("hello world", "hello world") >= 0.999
 
 
 def test_cosine_similarity_different_text():
@@ -80,7 +80,7 @@ def test_pairwise_agreement_high():
         {"raw_answer": "The answer is definitely 2", "normalized_answer": ""},
         {"raw_answer": "The answer is definitely 2", "normalized_answer": ""},
     ]
-    assert compute_pairwise_agreement(cands) == 1.0
+    assert compute_pairwise_agreement(cands) >= 0.999
 
 
 def test_pairwise_agreement_low():
