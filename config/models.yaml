@@ -1,0 +1,40 @@
+models:
+  - alias: minimax-portal/MiniMax-M2.7
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: primary
+
+  - alias: ollama/glm-5.1:cloud
+    provider: ollama_cloud
+    provider_model: glm-5.1
+    enabled: true
+    family: glm
+    tier: frontier
+    role_bias: reviewer
+
+  - alias: ollama/minimax-m2.7:cloud
+    provider: ollama_cloud
+    provider_model: minimax-m2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: backup
+
+  - alias: ollama/qwen3.5:cloud
+    provider: ollama_cloud
+    provider_model: qwen3.5
+    enabled: true
+    family: qwen
+    tier: strong
+    role_bias: synthesis
+
+  - alias: ollama/kimi-k2.5:cloud
+    provider: ollama_cloud
+    provider_model: kimi-k2.5
+    enabled: true
+    family: kimi
+    tier: strong
+    role_bias: creative
