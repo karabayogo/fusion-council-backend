@@ -256,7 +256,7 @@ async def stream_run_events(
                 latest_events = list_events_for_run(db, run_id, after_seq=seen - 2)
                 for ev in latest_events:
                     if ev["event_type"] in ("run.completed", "run.failed", "run.cancelled"):
-                        yield f"event: END\ndata: {{\"done\": true}}\n\n".encode()
+                        yield "event: END\ndata: {\"done\": true}\n\n".encode()
                         return
 
             await asyncio.sleep(poll_interval)
