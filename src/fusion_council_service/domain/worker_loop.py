@@ -2,24 +2,19 @@
 
 import asyncio
 import json
-import signal
 import sqlite3
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
+from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import open_db_connection, initialize_schema
-from fusion_council_service.domain import budget, event_emitter, scoring
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
-    emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_finalizing,
-    emit_run_started, emit_run_succeeded_degraded, emit_stage_progress, emit_stage_started,
+    emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
-from fusion_council_service.domain.event_repository import get_next_seq
 from fusion_council_service.domain.run_repository import claim_next_run, get_run, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
@@ -230,7 +225,7 @@ class Worker:
 
         deadline_s = run["deadline_seconds"]
         run_budget = compute_budget("fusion", deadline_s)
-        stage_budgets = {s.stage: s for s in run_budget.stages}
+        _stage_budgets = {s.stage: s for s in run_budget.stages}
 
         # Stage 1: generation — all models in parallel
         emit_stage_started(db, run_id, "generation", [m["alias"] for m in models])

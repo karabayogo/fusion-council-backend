@@ -28,7 +28,7 @@ jobs:
         run: uv pip install --system -e ".[dev]"
 
       - name: Verify DB schema
-        run: python -c "from fusion_council_service.db import initialize_schema; from fusion_council_service.schema import *"
+        run: python -c "from fusion_council_service.db import initialize_schema"
 
       - name: Run tests
         env:

@@ -12,7 +12,6 @@ from fusion_council_service.domain.event_emitter import (
     emit_heartbeat,
 )
 from fusion_council_service.domain.event_repository import (
-    append_event,
     list_events_for_run,
     get_next_seq,
 )

@@ -1,7 +1,6 @@
 """MiniMax Token Plan provider client using Anthropic SDK with custom base URL."""
 
 import time
-from typing import Optional
 
 import anthropic
 
@@ -35,7 +34,7 @@ class MiniMaxTokenPlanProvider:
     def generate(self, request: ProviderGenerateRequest) -> ProviderGenerateResult:
         start = time.monotonic()
         try:
-            messages = []
+# messages = []
             if request.system_prompt:
                 # Anthropic SDK passes system as a separate param
                 pass

@@ -1,6 +1,5 @@
 """Tests for run cancellation."""
 
-import json
 import pytest
 
 from fusion_council_service.domain.event_emitter import emit_run_cancelled

@@ -2,23 +2,19 @@
 
 import asyncio
 import json
-import os
 import sqlite3
-import time
 from typing import Optional
 
-import orjson
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from fusion_council_service.auth import extract_bearer, make_auth_dependency, resolve_role
+from fusion_council_service.auth import extract_bearer, resolve_role
 from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
 from fusion_council_service.config import Settings
 from fusion_council_service.db import open_db_connection, initialize_schema
-from fusion_council_service.domain import budget
 from fusion_council_service.domain.budget import resolve_deadline, select_models_for_mode
 from fusion_council_service.domain.event_emitter import emit_run_accepted
-from fusion_council_service.domain.event_repository import get_next_seq, list_events_for_run
+from fusion_council_service.domain.event_repository import list_events_for_run
 from fusion_council_service.domain.run_repository import get_run, insert_run, list_runs, update_run_status
 from fusion_council_service.domain.types import RespondRequest, RunRequest, RunResponse
 from fusion_council_service.ids import new_run_id
@@ -243,11 +239,6 @@ async def stream_run_events(
             for event in events:
                 seen = max(seen, event["seq"] + 1)
                 payload = json.loads(event["payload_json"]) if event["payload_json"] else {}
-                data = {
-                    "event": event["event_type"],
-                    "seq": event["seq"],
-                    "data": payload,
-                }
                 yield f"event: {event['event_type']}\ndata: {json.dumps(payload)}\n\n".encode()
 
             # Check if run is terminal

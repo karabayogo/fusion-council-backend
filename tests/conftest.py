@@ -1,9 +1,7 @@
 """Test fixtures for fusion-council-service tests."""
 
-import json
 import os
 import sqlite3
-import tempfile
 from typing import Generator
 
 import pytest
@@ -54,7 +52,6 @@ def mock_settings():
 @pytest.fixture
 def model_catalog(mock_settings, tmp_db):
     """Load the model catalog from YAML."""
-    from fusion_council_service.model_catalog import load_and_validate_catalog
     # Skip real provider validation in tests
     return _load_catalog_without_validation(mock_settings)
 
