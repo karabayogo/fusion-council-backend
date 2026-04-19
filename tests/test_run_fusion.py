@@ -4,7 +4,7 @@ import json
 import pytest
 
 from fusion_council_service.domain.candidate_repository import insert_candidate, list_candidates_for_run
-from fusion_council_service.domain.run_repository import insert_run, get_run, update_run_status
+from fusion_council_service.domain.run_repository import insert_run, get_run
 from fusion_council_service.domain.scoring import (
     build_fusion_prompt,
     cosine_similarity,

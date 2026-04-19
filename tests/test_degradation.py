@@ -1,16 +1,12 @@
 """Tests for the GET /v1/runs/{run_id}/answers endpoint and succeeded_degraded status."""
 
-import json
 import sqlite3
-import os
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from fusion_council_service.config import Settings
 from fusion_council_service.domain.budget import should_degrade, resolve_deadline
 from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
-from fusion_council_service.domain.event_emitter import emit_run_accepted, emit_run_succeeded_degraded
+from fusion_council_service.domain.event_emitter import emit_run_succeeded_degraded
 from fusion_council_service.domain.run_repository import insert_run, update_run_status
 from fusion_council_service.ids import new_run_id, new_candidate_id
 from fusion_council_service.clock import utc_now_iso
@@ -54,7 +50,6 @@ class TestAnswersEndpoint:
     def test_answers_returns_candidates(self, db, settings):
         """Answers endpoint should return all candidates for a run."""
         from fusion_council_service.api.routes import init_api, get_auth_dependency
-        from fusion_council_service.auth import make_auth_dependency
 
         init_api(settings)
         import fusion_council_service.api.routes as routes_mod
@@ -108,7 +103,6 @@ class TestAnswersEndpoint:
     def test_answers_404_for_missing_run(self, db, settings):
         """Answers endpoint should return 404 for non-existent run."""
         from fusion_council_service.api.routes import init_api, get_auth_dependency
-        from fusion_council_service.auth import make_auth_dependency
 
         init_api(settings)
         import fusion_council_service.api.routes as routes_mod

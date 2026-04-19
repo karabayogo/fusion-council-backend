@@ -1,8 +1,6 @@
 """Fusion Council Service — FastAPI main entry point."""
 
-import logging
 import os
-import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional
 

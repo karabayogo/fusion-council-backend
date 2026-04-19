@@ -1,7 +1,6 @@
 """Event repository — append and list run events."""
 
 import sqlite3
-from typing import Optional
 
 from fusion_council_service.ids import new_event_id
 

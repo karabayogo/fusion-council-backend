@@ -42,7 +42,6 @@ def require_auth(
     authorization: Optional[str] = Header(None),
 ) -> tuple[str, str]:
     """FastAPI dependency: returns (token, role) or raises 401/403."""
-    from fusion_council_service.config import Settings
 
     # We need the settings — this is resolved at request time from app.state
     # This dependency is wrapped by a factory that injects settings

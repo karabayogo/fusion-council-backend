@@ -52,7 +52,7 @@ jobs:
           docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }} --help || true
 
       - name: Checkout k8s-workbench
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.K8S_WORKBENCH_PUSH_TOKEN != ''
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && ${{ secrets.K8S_WORKBENCH_PUSH_TOKEN != '' }}
         uses: actions/checkout@v5
         with:
           repository: karabayogo/k8s-workbench
@@ -60,7 +60,7 @@ jobs:
           path: k8s-workbench
 
       - name: Update k8s-workbench dev image tag
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.K8S_WORKBENCH_PUSH_TOKEN != ''
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && ${{ secrets.K8S_WORKBENCH_PUSH_TOKEN != '' }}
         run: |
           python <<'PY'
           from pathlib import Path
@@ -93,7 +93,7 @@ jobs:
           PY
 
       - name: Commit k8s-workbench dev image tag
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && secrets.K8S_WORKBENCH_PUSH_TOKEN != ''
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main' && ${{ secrets.K8S_WORKBENCH_PUSH_TOKEN != '' }}
         run: |
           cd k8s-workbench
           if git diff --quiet -- values/fusion-council-api/dev.yaml; then

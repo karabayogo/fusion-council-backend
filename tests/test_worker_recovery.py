@@ -1,11 +1,7 @@
 """Tests for worker recovery after failures."""
 
-import json
-import pytest
 
-from fusion_council_service.domain.candidate_repository import insert_candidate, list_candidates_for_run
-from fusion_council_service.domain.run_repository import insert_run, get_run, update_run_status, claim_next_run
-from fusion_council_service.domain.event_emitter import emit_run_failed
+from fusion_council_service.domain.run_repository import insert_run, update_run_status, claim_next_run
 from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
 
 
@@ -79,8 +75,6 @@ def test_failed_run_does_not_block_claim(tmp_db):
 
 def test_worker_continues_after_one_bad_job(tmp_db, mock_failed_provider_result):
     """Worker should continue processing after a failed run."""
-    from fusion_council_service.domain.candidate_repository import insert_candidate
-    from fusion_council_service.ids import new_candidate_id
 
     # First run: fails
     insert_run(

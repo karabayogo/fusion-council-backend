@@ -1,7 +1,6 @@
 """Tests for single-mode runs."""
 
 import json
-import sqlite3
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -70,9 +69,7 @@ def test_single_run_succeeds_with_mocked_provider(tmp_db, setup_single_run, mock
     with patch("fusion_council_service.providers.registry.ProviderRegistry.generate") as mock_gen:
         mock_gen.return_value = mock_provider_result
 
-        from fusion_council_service.domain.worker_loop import Worker
         from fusion_council_service.config import Settings
-        from fusion_council_service.model_catalog import ModelCatalog, load_yaml_catalog
 
         settings = Settings(
             DATABASE_PATH=":memory:",
@@ -82,8 +79,7 @@ def test_single_run_succeeds_with_mocked_provider(tmp_db, setup_single_run, mock
             OLLAMA_API_KEY="test",
         )
         path = settings.MODEL_CATALOG_PATH
-        models = load_yaml_catalog(path)
-        catalog = ModelCatalog(models)
+# catalog = ModelCatalog(models)
         registry = MagicMock()
         registry.generate.return_value = mock_provider_result
 

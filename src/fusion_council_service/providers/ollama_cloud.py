@@ -1,7 +1,6 @@
 """Ollama cloud provider client using httpx directly (no ollama SDK)."""
 
 import time
-from typing import Optional
 
 import httpx
 
