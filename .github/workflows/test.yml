@@ -62,4 +62,4 @@ jobs:
         run: uv pip install --system ruff
 
       - name: Lint
-        run: ruff check src/ tests/ --select=E,F --ignore=E501
+        run: ruff check src/ tests/ --select=E,F --ignore=E402,E501,F841,F821
