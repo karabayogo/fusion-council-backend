@@ -25,7 +25,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Verify DB schema
         run: python -c "from fusion_council_service.db import initialize_schema; from fusion_council_service.schema import *"
@@ -59,7 +59,7 @@ jobs:
           enable-cache: true
 
       - name: Install ruff
-        run: uv pip install ruff
+        run: uv pip install --system ruff
 
       - name: Lint
         run: ruff check src/ tests/ --select=E,F --ignore=E501
