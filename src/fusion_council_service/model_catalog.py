@@ -100,7 +100,16 @@ def load_yaml_catalog(catalog_path: str) -> list[dict]:
 
 
 def validate_minimax(api_key: str, base_url: str) -> None:
-    """Validate MiniMax Token Plan access by making a trivial completion call."""
+    """Validate MiniMax Token Plan access by making a trivial completion call.
+
+    Set SKIP_PROVIDER_VALIDATION=1 to skip this check entirely (useful for CI,
+    air-gapped environments, or when the upstream API is known-unavailable).
+    """
+    import os
+    if os.environ.get("SKIP_PROVIDER_VALIDATION", "").strip() in ("1", "true", "yes"):
+        logger.info("MiniMax validation skipped (SKIP_PROVIDER_VALIDATION=1)", event_type="model.validation_skipped")
+        return
+
     import anthropic
 
     client = anthropic.Anthropic(
@@ -123,7 +132,12 @@ def validate_minimax(api_key: str, base_url: str) -> None:
 def validate_ollama_models(api_key: str, base_url: str, expected_models: list[str]) -> dict[str, str]:
     """Validate Ollama cloud models by calling /api/tags.
     Returns a dict of {provider_model: validation_error} for any missing models.
+    Set SKIP_PROVIDER_VALIDATION=1 to skip this check entirely.
     """
+    import os
+    if os.environ.get("SKIP_PROVIDER_VALIDATION", "").strip() in ("1", "true", "yes"):
+        logger.info("Ollama validation skipped (SKIP_PROVIDER_VALIDATION=1)", event_type="model.validation_skipped")
+        return {}
     errors = {}
     try:
         response = httpx.get(
