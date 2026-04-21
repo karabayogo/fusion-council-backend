@@ -127,7 +127,7 @@ async def create_run(
         status="queued",
         status_url=f"{base_url}/v1/runs/{run_id}",
         events_url=f"{base_url}/v1/runs/{run_id}/events",
-        answers_url=f"{base_url}/v1/runs/{run_id}/candidates",
+        answers_url=f"{base_url}/v1/runs/{run_id}/answers",
         suggested_poll_interval_ms=settings.SSE_POLL_INTERVAL_MS,
     )
 
@@ -375,6 +375,27 @@ def _catalog_from_settings():
     from fusion_council_service.model_catalog import load_yaml_catalog
     models = load_yaml_catalog(_settings.MODEL_CATALOG_PATH)
     return ModelCatalog(models)
+
+
+@router.get("/v1/models")
+async def list_models(auth=Depends(get_auth_dependency())):
+    """Return the model alias catalog and enablement status."""
+    catalog = _catalog_from_settings()
+    models = catalog.all_models()
+    return {
+        "models": [
+            {
+                "alias": m["alias"],
+                "provider": m["provider"],
+                "provider_model": m["provider_model"],
+                "family": m["family"],
+                "tier": m["tier"],
+                "enabled": m.get("enabled", True),
+            }
+            for m in models
+        ],
+        "count": len(models),
+    }
 
 
 def _hash_token(token: str) -> str:
