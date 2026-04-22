@@ -1,5 +1,33 @@
 # Fusion Council Backend — Operations Guide
 
+## Monitoring and Alerting
+
+Prometheus scraping from VM 900 (192.168.1.224) monitors the Fusion Council backend via kube-state-metrics in the `monitoring` namespace.
+
+| Alert | Status | Notes |
+|-------|--------|-------|
+| `K8sPodCrashLoopBackOff` | ✅ Active | Fires when `reason="CrashLoopBackOff"` for >2m |
+| `K8sPodHighRestartCount` | ✅ Active | Fires when >10 restarts in 10m |
+| `K8sPodNotReady` | ✅ **Currently firing** | 2 backup pods stuck in `ImagePullBackOff` (pp + prod) |
+| `K8sDeploymentReplicasMismatch` | ✅ Active | |
+| `K8sServiceHasNoEndpoints` | ✅ Active | |
+
+Alertmanager delivers to Discord `#kai-ops` via webhook stored in Vault path `secret/observability/alertmanager-discord` v3. Synced by `sync-vault-secrets.sh` every 6 hours.
+
+### Known Issues
+
+- **No `ImagePullBackOff` alert:** Pods stuck pulling bad images (like the backup cronjobs with `sha-REPLACE_ME`) only trigger `K8sPodNotReady`, not `CrashLoopBackOff`. Add `K8sContainerWaiting` alert for generic `Waiting` states.
+- **Backup cronjob images broken:** `pp` namespace uses `sha-REPLACE_ME` (Helm placeholder); `prod` namespace uses `v1.0.0` (not in ghcr). Both cause `ImagePullBackOff`.
+
+### OpenClaw Cron Jobs
+
+| Job | ID | Schedule | Purpose |
+|-----|----|----------|---------|
+| `fusion-council-api-smoke` | `17157281-2f67-4065-9760-cfd5cc07f661` | Every 5 min | Health checks via kubectl exec, Discord alerts on failure |
+| `observability-alert-relay` | `7b728270-4c88-4e1f-8099-ccff43c671ec` | Every 5 min | Polls Prometheus alerts, posts to Discord `#kai-ops` |
+
+---
+
 ## Quick Reference
 
 | Action | Command |
