@@ -52,10 +52,20 @@ def get_settings() -> Settings:
 
 
 def get_auth_dependency():
-    """Factory for auth dependency using app settings."""
-    def dependency(authorization: Optional[str] = Header(None)):
+    """Factory for auth dependency using app settings.
+
+    Supports both Authorization: Bearer header (standard clients) and
+    ?auth=<token> query param (SSE clients via EventSource).
+    """
+    def dependency(
+        authorization: Optional[str] = Header(None),
+        auth_query: Optional[str] = Query(default=None, alias="auth"),
+    ):
         settings = get_settings()
+        # Prefer header; fall back to query param for SSE/EventSource clients
         token = extract_bearer(authorization)
+        if token is None:
+            token = auth_query
         if token is None:
             raise HTTPException(status_code=401, detail="Missing Authorization header")
         role = resolve_role(token, settings.service_api_keys, settings.service_admin_api_keys)
