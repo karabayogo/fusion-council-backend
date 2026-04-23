@@ -47,48 +47,7 @@ def test_resolve_role_unknown():
     assert resolve_role("bad-key", ["user-key"], ["admin-key"]) is None
 
 
-def test_auth_dependency_accepts_header(auth_headers_user):
-    """Standard Authorization: Bearer header should be accepted."""
-    from fusion_council_service.api.routes import get_auth_dependency
 
-    dep = get_auth_dependency()
-    # Simulate FastAPI params
-    result = dep(authorization=auth_headers_user["Authorization"])
-    assert result == ("test-user-key", "user")
-
-
-def test_auth_dependency_accepts_query_param():
-    """Query param ?auth=<token> should be accepted as fallback."""
-    from fusion_council_service.api.routes import get_auth_dependency
-
-    dep = get_auth_dependency()
-    # Simulate: no Authorization header, but auth_query provided
-    result = dep(authorization=None, auth_query="test-user-key")
-    assert result == ("test-user-key", "user")
-
-
-def test_auth_dependency_header_takes_precedence():
-    """Header token should take precedence over query param (if both given)."""
-    from fusion_council_service.api.routes import get_auth_dependency
-
-    dep = get_auth_dependency()
-    # Both given — header wins
-    result = dep(authorization="Bearer test-admin-key", auth_query="test-user-key")
-    assert result == ("test-admin-key", "admin")
-
-
-def test_auth_dependency_rejects_missing_token():
-    """Missing both header and query param should raise 401."""
-    from fusion_council_service.api.routes import get_auth_dependency
-    from fastapi import HTTPException
-
-    dep = get_auth_dependency()
-    try:
-        dep(authorization=None, auth_query=None)
-        assert False, "Expected HTTPException"
-    except HTTPException as e:
-        assert e.status_code == 401
-        assert "Missing Authorization header" in e.detail
 
 
 def test_auth_dependency_accepts_header(tmp_db, mock_settings):
