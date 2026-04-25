@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     DATABASE_PATH: str
     SERVICE_API_KEYS: str
     SERVICE_ADMIN_API_KEYS: str
-    MINIMAX_TOKEN_PLAN_API_KEY: str
+    MINIMAX_API_KEY: str
     MINIMAX_ANTHROPIC_BASE_URL: str = "https://api.minimax.io/anthropic"
     OLLAMA_API_KEY: str
     OLLAMA_BASE_URL: str = "https://ollama.com"

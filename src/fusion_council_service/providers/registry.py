@@ -40,7 +40,7 @@ def build_provider_registry(settings) -> ProviderRegistry:
     registry.register(
         "minimax_token_plan",
         MiniMaxTokenPlanProvider(
-            api_key=settings.MINIMAX_TOKEN_PLAN_API_KEY,
+            api_key=settings.MINIMAX_API_KEY,
             base_url=settings.MINIMAX_ANTHROPIC_BASE_URL,
         ),
     )
