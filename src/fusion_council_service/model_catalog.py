@@ -173,7 +173,7 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
 
     # Validate MiniMax
     minimax_models = [m for m in models if m["provider"] == "minimax_token_plan"]
-    validate_minimax(settings.MINIMAX_TOKEN_PLAN_API_KEY, settings.MINIMAX_ANTHROPIC_BASE_URL)
+    validate_minimax(settings.MINIMAX_API_KEY, settings.MINIMAX_ANTHROPIC_BASE_URL)
 
     # Validate Ollama
     ollama_models = [m for m in models if m["provider"] == "ollama_cloud"]
