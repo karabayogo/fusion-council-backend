@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
         DATABASE_PATH=os.environ.get("DATABASE_PATH", "./data/fusion_council.db"),
         SERVICE_API_KEYS=os.environ.get("SERVICE_API_KEYS", ""),
         SERVICE_ADMIN_API_KEYS=os.environ.get("SERVICE_ADMIN_API_KEYS", ""),
-        MINIMAX_TOKEN_PLAN_API_KEY=os.environ.get("MINIMAX_TOKEN_PLAN_API_KEY", ""),
+        MINIMAX_API_KEY=os.environ.get("MINIMAX_API_KEY", ""),
         OLLAMA_API_KEY=os.environ.get("OLLAMA_API_KEY", ""),
         MINIMAX_ANTHROPIC_BASE_URL=os.environ.get("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"),
         OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", "https://ollama.com"),
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
     )
 
     # Validate required settings
-    required = ["DATABASE_PATH", "SERVICE_API_KEYS", "MINIMAX_TOKEN_PLAN_API_KEY", "OLLAMA_API_KEY"]
+    required = ["DATABASE_PATH", "SERVICE_API_KEYS", "MINIMAX_API_KEY", "OLLAMA_API_KEY"]
     for key in required:
         val = getattr(_settings, key, None)
         if not val:
