@@ -53,7 +53,7 @@ jobs:
       - name: Verify image is pullable from GHCR
         if: github.event_name != 'workflow_dispatch'
         run: |
-          IMAGE="ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha[0:7] }}"
           echo "Verifying ${IMAGE} is accessible in GHCR..."
           MAX_RETRIES=5
           RETRY_DELAY=10
@@ -73,7 +73,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         id: digest
         run: |
-          digest=$(docker inspect ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }} --format='{{index .RepoDigests 0}}' | cut -d'@' -f2)
+          digest=$(docker inspect ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha[0:7] }} --format='{{index .RepoDigests 0}}' | cut -d'@' -f2)
           echo "digest=$digest" >> $GITHUB_OUTPUT
           echo "Image digest: $digest"
 
@@ -99,7 +99,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         run: |
           docker load --input /tmp/fusion-council-api.tar
-          docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }} --help || true
+          docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha[0:7] }} --help || true
 
       # ── FIX B: All k8s-workbench steps consolidated ─────────────────────────
       # Separated from build to make the two-step pattern explicit:
@@ -136,7 +136,7 @@ jobs:
               if in_image_block and line and not line.startswith(' '):
                   in_image_block = False
               if in_image_block and stripped.startswith('tag:'):
-                  updated.append('  tag: "sha-${{ github.sha }}"')
+                  updated.append('  tag: "sha-${{ github.sha[0:7] }}"')
                   replaced = True
                   continue
               updated.append(line)
