@@ -252,7 +252,8 @@ class Worker:
         results = await asyncio.gather(*[call_with_sem(m, r) for m, r in pending_calls])
 
         for (model, request), result in zip(pending_calls, results):
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = result
+            _m, provider_result = result
+            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
             if success:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
@@ -431,7 +432,8 @@ class Worker:
 
         first_opinions = []
         for (model, request), result in zip([(m, None) for m in models], first_results):
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = result
+            _m, provider_result = result
+            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
             m = model
             if success:
@@ -543,7 +545,8 @@ class Worker:
 
         peer_reviews = []
         for (model, request), result in zip(review_tasks, review_results):
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = result
+            _m, provider_result = result
+            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
             if success:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
