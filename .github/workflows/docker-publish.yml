@@ -48,17 +48,26 @@ jobs:
 
       # ── FIX A: Verify image exists in GHCR before touching k8s-workbench ──
       # This prevents committing a SHA to git that was never successfully pushed.
+      # Use docker buildx imagetools inspect (lightweight manifest check, no layer pull).
+      # Retry up to 5 times with 10s backoff because GHCR may lag after push.
       - name: Verify image is pullable from GHCR
         if: github.event_name != 'workflow_dispatch'
         run: |
-          echo "Verifying ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }} is pullable..."
-          if docker pull ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }}; then
-            echo "Image verified successfully."
-          else
-            echo "ERROR: Image sha-${{ github.sha }} is not pullable from GHCR."
-            echo "Refusing to update k8s-workbench with an unverified SHA."
-            exit 1
-          fi
+          IMAGE="ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ github.sha }}"
+          echo "Verifying ${IMAGE} is accessible in GHCR..."
+          MAX_RETRIES=5
+          RETRY_DELAY=10
+          for i in $(seq 1 ${MAX_RETRIES}); do
+            if docker buildx imagetools inspect "${IMAGE}" > /dev/null 2>&1; then
+              echo "Image verified successfully on attempt ${i}."
+              exit 0
+            fi
+            echo "Attempt ${i}/${MAX_RETRIES} failed — GHCR may still be indexing. Retrying in ${RETRY_DELAY}s..."
+            sleep ${RETRY_DELAY}
+          done
+          echo "ERROR: Image ${IMAGE} not accessible after ${MAX_RETRIES} attempts."
+          echo "Refusing to update k8s-workbench with an unverified SHA."
+          exit 1
 
       - name: Get image digest
         if: github.event_name != 'workflow_dispatch'
