@@ -35,7 +35,7 @@ jobs:
           DATABASE_PATH: ":memory:"
           SERVICE_API_KEYS: "ci-key-1"
           SERVICE_ADMIN_API_KEYS: "ci-admin-key"
-          MINIMAX_TOKEN_PLAN_API_KEY: "ci-minimax-key"
+          MINIMAX_API_KEY: "ci-minimax-key"
           OLLAMA_API_KEY: "ci-ollama-key"
           MINIMAX_ANTHROPIC_BASE_URL: "https://api.minimax.io/anthropic"
           OLLAMA_BASE_URL: "https://ollama.com"
