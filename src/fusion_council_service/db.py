@@ -1,11 +1,14 @@
 """Database connection and schema initialization."""
 
+import os
 import sqlite3
 from pathlib import Path
 
 from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.db")
+
+_DEFAULT_BUSY_TIMEOUT = 30  # seconds
 
 
 def open_db_connection(database_path: str) -> sqlite3.Connection:
@@ -16,11 +19,14 @@ def open_db_connection(database_path: str) -> sqlite3.Connection:
     # Ensure parent directory exists
     Path(database_path).parent.mkdir(parents=True, exist_ok=True)
 
-    db = sqlite3.connect(database_path, timeout=5)  # 5000 ms busy timeout
+    timeout = int(os.environ.get("SQLITE_BUSY_TIMEOUT", str(_DEFAULT_BUSY_TIMEOUT)))
+    db = sqlite3.connect(database_path, timeout=timeout)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
     db.execute("PRAGMA foreign_keys=ON")
+    db.execute(f"PRAGMA busy_timeout={timeout * 1000}")
+    logger.info(f"SQLite busy_timeout set to {timeout}s")
 
     journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
     fk_status = db.execute("PRAGMA foreign_keys").fetchone()[0]
