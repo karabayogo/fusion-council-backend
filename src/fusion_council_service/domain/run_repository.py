@@ -57,6 +57,35 @@ def list_runs(db: sqlite3.Connection, limit: int = 50) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
+def reset_stale_running_runs(
+    db: sqlite3.Connection, stale_threshold_seconds: int = 30
+) -> int:
+    """Reset runs stuck in 'running' status past the stale threshold.
+
+    A run is considered stale if:
+    - status = 'running', AND
+    - last_heartbeat_at IS NULL, OR
+    - last_heartbeat_at is older than the threshold.
+
+    Returns the number of rows recovered.
+    """
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        UPDATE runs
+        SET status = 'queued', started_at = NULL, current_stage = 'queued'
+        WHERE status = 'running'
+          AND (
+            last_heartbeat_at IS NULL
+            OR datetime(last_heartbeat_at) < datetime('now', ?)
+          )
+        """,
+        (f'-{stale_threshold_seconds} seconds',),
+    )
+    db.commit()
+    return cursor.rowcount
+
+
 def claim_next_run(db: sqlite3.Connection) -> Optional[dict]:
     """Atomically claim the next queued run. Returns None if no run available."""
     cursor = db.cursor()
