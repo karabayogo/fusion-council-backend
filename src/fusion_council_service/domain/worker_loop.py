@@ -63,6 +63,7 @@ class Worker:
         self._stale_run_threshold_seconds = stale_run_threshold_seconds
         self._running = False
         self._db: Optional[sqlite3.Connection] = None
+        self._current_run_task: Optional[asyncio.Task] = None
         self._worker_id = f"worker-{int(time.time())}"
 
     def _get_db(self) -> sqlite3.Connection:
@@ -791,7 +792,7 @@ class Worker:
                 # Try to claim a run
                 run = claim_next_run(db)
                 if run:
-                    asyncio.create_task(self._execute_run(run))
+                    self._current_run_task = asyncio.create_task(self._execute_run(run))
                 else:
                     await asyncio.sleep(self._poll_interval_s)
             except sqlite3.OperationalError as e:

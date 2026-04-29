@@ -3,6 +3,7 @@
 import signal
 import sys
 import os
+import asyncio
 
 # Add src to path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -53,6 +54,17 @@ def main() -> None:
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, shutting down")
         worker.stop()
+        # Wait for active run to finish (preStop gives us 240s, use 200s to be safe)
+        if worker._current_run_task and not worker._current_run_task.done():
+            logger.info("Waiting for active run to complete before exiting...")
+            try:
+                loop = asyncio.get_event_loop()
+                loop.run_until_complete(
+                    asyncio.wait_for(worker._current_run_task, timeout=200)
+                )
+                logger.info("Active run completed, exiting cleanly")
+            except asyncio.TimeoutError:
+                logger.warning("Active run did not complete within 200s timeout, forcing exit")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, signal_handler)
