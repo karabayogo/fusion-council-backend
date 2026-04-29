@@ -711,9 +711,20 @@ class Worker:
 
     async def _execute_run(self, run: dict) -> None:
         """Main entry point for executing a single run."""
+        import os as _os
+
         db = self._get_db()
         run_id = run["run_id"]
         mode = run["mode"]
+
+        # Sentinel file for graceful shutdown (preStop hook waits for this)
+        run_active_sentinel = "/tmp/run-active"
+        try:
+            _os.makedirs("/tmp", exist_ok=True)
+            with open(run_active_sentinel, "w") as f:
+                f.write(run_id)
+        except Exception:
+            pass
 
         logger.info(f"Worker claiming run {run_id}", run_id=run_id)
         update_run_status(db, run_id, "running", started_at=utc_now_iso(), last_heartbeat_at=utc_now_iso())
@@ -740,6 +751,13 @@ class Worker:
         except Exception as e:
             logger.error(f"Worker exception in run {run_id}: {e}", run_id=run_id)
             await self._fail_run(db, run_id, "WORKER_EXCEPTION", str(e))
+        finally:
+            try:
+                _os.remove(run_active_sentinel)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
 
     async def _heartbeat_loop(self, run_id: str, stage: str) -> None:
         """Background heartbeat emitter while a run is active."""
@@ -761,6 +779,13 @@ class Worker:
         self._recover_stale_runs()
 
         while self._running:
+            # Check for graceful shutdown request (preStop hook touches this file)
+            import os as _os
+            if _os.path.exists("/tmp/shutdown-requested"):
+                logger.info("Shutdown requested via sentinel file, stopping gracefully")
+                self._running = False
+                break
+
             db = self._get_db()
             try:
                 # Try to claim a run
