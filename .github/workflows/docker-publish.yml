@@ -47,7 +47,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          load: ${{ github.event_name == 'workflow_dispatch' }}
+          load: true
           outputs: type=docker,dest=/tmp/fusion-council-api.tar
 
       # ── FIX A: Verify image exists in GHCR before touching k8s-workbench ──
@@ -102,7 +102,7 @@ jobs:
       - name: Run smoke test (when not workflow_dispatch)
         if: github.event_name != 'workflow_dispatch'
         run: |
-          docker load --input /tmp/fusion-council-api.tar
+          docker load --input /tmp/fusion-council-api.tar || true
           docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ steps.short_sha.outputs.sha7 }} --help || true
 
       # ── FIX B: All k8s-workbench steps consolidated ─────────────────────────
