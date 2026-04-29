@@ -68,6 +68,19 @@ class Worker:
             initialize_schema(self._db)
         return self._db
 
+    def _reset_db(self) -> None:
+        """Close and reset the cached database connection.
+
+        Called when an OperationalError (e.g. 'database is locked') poisons the
+        connection state. A fresh connection will be opened on the next _get_db call.
+        """
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            self._db = None
+
     def _update_heartbeat(self, run_id: str) -> None:
         db = self._get_db()
         update_run_status(db, run_id, "running", last_heartbeat_at=utc_now_iso())
@@ -683,6 +696,15 @@ class Worker:
                 await self._run_council(db, run)
             else:
                 await self._fail_run(db, run_id, "INVALID_MODE", f"Unknown mode: {mode}")
+        except sqlite3.OperationalError as e:
+            logger.error(
+                f"SQLite operational error in run {run_id}: {e}. Resetting connection.",
+                run_id=run_id,
+            )
+            self._reset_db()
+            # Re-open a fresh connection to mark the run as failed
+            fresh_db = self._get_db()
+            await self._fail_run(fresh_db, run_id, "DB_LOCKED", str(e))
         except Exception as e:
             logger.error(f"Worker exception in run {run_id}: {e}", run_id=run_id)
             await self._fail_run(db, run_id, "WORKER_EXCEPTION", str(e))
@@ -712,6 +734,10 @@ class Worker:
                     asyncio.create_task(self._execute_run(run))
                 else:
                     await asyncio.sleep(self._poll_interval_s)
+            except sqlite3.OperationalError as e:
+                logger.error(f"SQLite operational error in poll loop: {e}. Resetting connection.")
+                self._reset_db()
+                await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"Worker poll error: {e}")
                 await asyncio.sleep(5)
