@@ -1,25 +1,25 @@
 models:
-  - alias: minimax-portal/MiniMax-M2.7
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
+  - alias: ollama/deepseek-v4-pro:cloud
+    provider: ollama_cloud
+    provider_model: deepseek-v4-pro:cloud
     enabled: true
-    family: minimax
+    family: deepseek
     tier: frontier
     role_bias: primary
+
+  - alias: ollama/kimi-k2.6:cloud
+    provider: ollama_cloud
+    provider_model: kimi-k2.6:cloud
+    enabled: true
+    family: kimi
+    tier: frontier
+    role_bias: reviewer    
 
   - alias: ollama/glm-5.1:cloud
     provider: ollama_cloud
     provider_model: glm-5.1:cloud
     enabled: true
     family: glm
-    tier: frontier
-    role_bias: reviewer
-
-  - alias: ollama/minimax-m2.7:cloud
-    provider: ollama_cloud
-    provider_model: minimax-m2.7:cloud
-    enabled: true
-    family: minimax
     tier: frontier
     role_bias: backup
 
@@ -31,10 +31,11 @@ models:
     tier: strong
     role_bias: synthesis
 
-  - alias: ollama/kimi-k2.5:cloud
-    provider: ollama_cloud
-    provider_model: kimi-k2.5:cloud
+  - alias: minimax-portal/MiniMax-M2.7
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
     enabled: true
-    family: kimi
-    tier: strong
+    family: minimax
+    tier: frontier
     role_bias: creative
+
