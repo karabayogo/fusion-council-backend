@@ -182,7 +182,6 @@ class Worker:
 
     async def _run_single(self, db: sqlite3.Connection, run: dict) -> None:
         """Execute a single-mode run."""
-        from fusion_council_service.domain.types import ProviderGenerateRequest
 
         run_id = run["run_id"]
         logger.info("Starting single run", run_id=run_id)
@@ -259,7 +258,6 @@ class Worker:
 
     async def _run_fusion(self, db: sqlite3.Connection, run: dict) -> None:
         """Execute a fusion-mode run."""
-        from fusion_council_service.domain.types import ProviderGenerateRequest
 
         run_id = run["run_id"]
         logger.info("Starting fusion run", run_id=run_id)
@@ -446,7 +444,6 @@ class Worker:
 
     async def _run_council(self, db: sqlite3.Connection, run: dict) -> None:
         """Execute a council-mode run."""
-        from fusion_council_service.domain.types import ProviderGenerateRequest
 
         run_id = run["run_id"]
         logger.info("Starting council run", run_id=run_id)
