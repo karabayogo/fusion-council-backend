@@ -15,12 +15,13 @@ from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
-from fusion_council_service.domain.run_repository import claim_next_run, get_run, update_run_status
+from fusion_council_service.domain.run_repository import claim_next_run, get_run, reset_stale_running_runs, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
     build_peer_review_prompt, build_verification_prompt, compute_pairwise_agreement,
     select_best_candidate,
 )
+from fusion_council_service.domain.types import ProviderGenerateRequest, ProviderGenerateResult
 from fusion_council_service.ids import new_candidate_id
 from fusion_council_service.logging_utils import get_logger
 from fusion_council_service.model_catalog import ModelCatalog
@@ -52,12 +53,14 @@ class Worker:
         catalog: ModelCatalog,
         poll_interval_ms: int = 1000,
         heartbeat_interval_ms: int = 5000,
+        stale_run_threshold_seconds: int = 30,
     ):
         self._db_path = db_path
         self._registry = registry
         self._catalog = catalog
         self._poll_interval_s = poll_interval_ms / 1000.0
         self._heartbeat_interval_s = heartbeat_interval_ms / 1000.0
+        self._stale_run_threshold_seconds = stale_run_threshold_seconds
         self._running = False
         self._db: Optional[sqlite3.Connection] = None
         self._worker_id = f"worker-{int(time.time())}"
@@ -80,6 +83,13 @@ class Worker:
             except Exception:
                 pass
             self._db = None
+
+    def _recover_stale_runs(self) -> None:
+        """Reset any runs stuck in 'running' status past the stale threshold."""
+        db = self._get_db()
+        recovered = reset_stale_running_runs(db, self._stale_run_threshold_seconds)
+        if recovered > 0:
+            logger.info(f"Recovered {recovered} stale run(s) stuck in 'running' status")
 
     def _update_heartbeat(self, run_id: str) -> None:
         db = self._get_db()
@@ -140,12 +150,34 @@ class Worker:
                 return m
         return None
 
-    async def _call_provider_async(self, request, db: sqlite3.Connection, run_id: str):
-        """Call provider in thread pool and return result."""
+    async def _call_provider_async(self, request, db: sqlite3.Connection, run_id: str,
+                                    timeout_seconds: int = 120):
+        """Call provider in thread pool and return result.
+
+        Wraps the blocking call with a timeout. If the provider call exceeds
+        timeout_seconds, returns a failed ProviderGenerateResult with
+        error_code='PROVIDER_TIMEOUT'.
+        """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        coro = loop.run_in_executor(
             _executor, _run_provider_sync, self._registry, request,
         )
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Provider call timed out after {timeout_seconds}s for {request.alias}",
+                run_id=run_id,
+            )
+            return ProviderGenerateResult(
+                success=False,
+                raw_text=None,
+                error_code='PROVIDER_TIMEOUT',
+                error_message=f'Provider call timed out after {timeout_seconds}s',
+                latency_ms=timeout_seconds * 1000,
+                input_tokens=None,
+                output_tokens=None,
+            )
 
     async def _run_single(self, db: sqlite3.Connection, run: dict) -> None:
         """Execute a single-mode run."""
@@ -724,6 +756,9 @@ class Worker:
         """Main worker loop."""
         logger.info("Worker loop starting")
         self._running = True
+
+        # Recover any runs stuck in 'running' status before polling
+        self._recover_stale_runs()
 
         while self._running:
             db = self._get_db()
