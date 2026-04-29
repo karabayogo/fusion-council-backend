@@ -9,7 +9,7 @@ models:
 
   - alias: ollama/glm-5.1:cloud
     provider: ollama_cloud
-    provider_model: glm-5.1
+    provider_model: glm-5.1:cloud
     enabled: true
     family: glm
     tier: frontier
@@ -17,7 +17,7 @@ models:
 
   - alias: ollama/minimax-m2.7:cloud
     provider: ollama_cloud
-    provider_model: minimax-m2.7
+    provider_model: minimax-m2.7:cloud
     enabled: true
     family: minimax
     tier: frontier
@@ -25,7 +25,7 @@ models:
 
   - alias: ollama/qwen3.5:cloud
     provider: ollama_cloud
-    provider_model: qwen3.5
+    provider_model: qwen3.5:cloud
     enabled: true
     family: qwen
     tier: strong
@@ -33,7 +33,7 @@ models:
 
   - alias: ollama/kimi-k2.5:cloud
     provider: ollama_cloud
-    provider_model: kimi-k2.5
+    provider_model: kimi-k2.5:cloud
     enabled: true
     family: kimi
     tier: strong
