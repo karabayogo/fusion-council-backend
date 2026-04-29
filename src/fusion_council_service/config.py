@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     SERVICE_ADMIN_API_KEYS: str
     MINIMAX_API_KEY: str
     MINIMAX_ANTHROPIC_BASE_URL: str = "https://api.minimax.io/anthropic"
+    MINIMAX_TOKEN_PLAN_API_KEY: str = ""
     OLLAMA_API_KEY: str
     OLLAMA_BASE_URL: str = "https://ollama.com"
     WORKER_POLL_INTERVAL_MS: int = 1000
