@@ -50,7 +50,7 @@ jobs:
           load: true
           outputs: type=docker,dest=/tmp/fusion-council-api.tar
 
-      # Verify image exists in GHCR before touching k8s-workbench
+      # Verify image exists in GHCR before proceeding
       - name: Verify image is pullable from GHCR
         if: github.event_name != 'workflow_dispatch'
         run: |
@@ -67,7 +67,7 @@ jobs:
             sleep ${RETRY_DELAY}
           done
           echo "ERROR: Image ${IMAGE} not accessible after ${MAX_RETRIES} attempts."
-          echo "Refusing to update k8s-workbench with an unverified SHA."
+          echo "Image verification failed after ${MAX_RETRIES} attempts."
           exit 1
 
       - name: Get image digest
@@ -84,80 +84,3 @@ jobs:
           docker load --input /tmp/fusion-council-api.tar || true
           docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ steps.short_sha.outputs.sha7 }} --help || true
 
-      # k8s-workbench steps — runs AFTER image is built, pushed, verified, and smoke-tested
-      - name: Checkout k8s-workbench
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        uses: actions/checkout@v5
-        with:
-          repository: karabayogo/k8s-workbench
-          token: ${{ secrets.K8S_WORKBENCH_PUSH_TOKEN }}
-          path: k8s-workbench
-
-      - name: Record production image digest
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        run: |
-          python <<'PY'
-          from pathlib import Path
-
-          digest = "${{ steps.digest.outputs.digest }}"
-          if not digest:
-              print("No digest found — check if digest step ran")
-              raise SystemExit(1)
-
-          path = Path('k8s-workbench/values/fusion-council-api/digest.txt')
-          path.write_text(digest.strip() + '\n')
-          print(f"Digest recorded: {digest.strip()}")
-          PY
-
-      - name: Update k8s-workbench dev image tag
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        run: |
-          python <<'PY'
-          from pathlib import Path
-
-          path = Path('k8s-workbench/values/fusion-council-api/dev.yaml')
-          original = path.read_text()
-          lines = original.splitlines()
-          updated = []
-          in_image_block = False
-          replaced = False
-
-          for line in lines:
-              stripped = line.strip()
-              if stripped == 'image:':
-                  in_image_block = True
-                  updated.append(line)
-                  continue
-              if in_image_block and line and not line.startswith(' '):
-                  in_image_block = False
-              if in_image_block and stripped.startswith('tag:'):
-                  updated.append('  tag: "sha-${{ steps.short_sha.outputs.sha7 }}"')
-                  replaced = True
-                  continue
-              updated.append(line)
-
-          if not replaced:
-              raise SystemExit('image.tag not found in values/fusion-council-api/dev.yaml')
-
-          path.write_text('\n'.join(updated) + '\n')
-          PY
-
-      - name: Commit and push k8s-workbench dev image tag
-        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        run: |
-          set -eo pipefail
-          cd k8s-workbench
-          if git diff --quiet -- values/fusion-council-api/dev.yaml; then
-            echo "No k8s-workbench changes to commit — image SHA already recorded."
-            exit 0
-          fi
-          git config user.email "ci@fusion-council.local"
-          git config user.name "GitHub Actions CI"
-          git add values/fusion-council-api/dev.yaml
-          git commit -m "Update fusion-council-api dev image to sha-${{ github.sha }}"
-          if ! git push; then
-            echo "WARNING: Image sha-${{ github.sha }} was pushed to GHCR but k8s-workbench update FAILED."
-            echo "ACTION REQUIRED: Manually update karabayogo/k8s-workbench with the correct SHA."
-            exit 1
-          fi
-          echo "k8s-workbench updated successfully."
