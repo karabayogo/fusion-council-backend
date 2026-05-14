@@ -14,13 +14,17 @@ logger = get_logger("fusion_council_service.model_catalog")
 
 # Default model selection constants
 FUSION_ACTIVE_TRIO = [
-    "minimax/MiniMax-M2.7",
+    "minimax/MiniMax-M2.7-primary",
+    "minimax/MiniMax-M2.7-reviewer",
+    "minimax/MiniMax-M2.7-synthesis",
 ]
 
 FUSION_FALLBACK_QUEUE = []
 
 COUNCIL_ACTIVE_TRIO = [
-    "minimax/MiniMax-M2.7",
+    "minimax/MiniMax-M2.7-primary",
+    "minimax/MiniMax-M2.7-reviewer",
+    "minimax/MiniMax-M2.7-synthesis",
 ]
 
 COUNCIL_FALLBACK_QUEUE = []
@@ -29,21 +33,25 @@ SINGLE_DEFAULT_MODEL = "minimax/MiniMax-M2.7"
 
 # Synthesis model order
 SYNTHESIS_MODEL_ORDER = [
+    "minimax/MiniMax-M2.7-synthesis",
     "minimax/MiniMax-M2.7",
 ]
 
 # Verification model order
 VERIFICATION_MODEL_ORDER = [
+    "minimax/MiniMax-M2.7-reviewer",
     "minimax/MiniMax-M2.7",
 ]
 
 # Council synthesis model order
 COUNCIL_SYNTHESIS_MODEL_ORDER = [
+    "minimax/MiniMax-M2.7-synthesis",
     "minimax/MiniMax-M2.7",
 ]
 
 # Council verification model order
 COUNCIL_VERIFICATION_MODEL_ORDER = [
+    "minimax/MiniMax-M2.7-reviewer",
     "minimax/MiniMax-M2.7",
 ]
 

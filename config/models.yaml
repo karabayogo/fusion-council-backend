@@ -23,6 +23,30 @@ models:
     tier: frontier
     role_bias: backup
 
+  - alias: minimax/MiniMax-M2.7-primary
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: primary
+
+  - alias: minimax/MiniMax-M2.7-reviewer
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: reviewer
+
+  - alias: minimax/MiniMax-M2.7-synthesis
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: synthesis
+
   - alias: opencode-go/deepseek-v4-pro
     provider: opencode_go
     provider_model: deepseek-v4-pro

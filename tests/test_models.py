@@ -11,10 +11,11 @@ from fusion_council_service.model_catalog import (
 def test_load_yaml_catalog():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
-    assert len(models) == 6
+    assert len(models) == 9
     aliases = [m["alias"] for m in models]
     assert "openai-codex/gpt-5.3-codex" in aliases
-    assert "opencode-go/gpt-5.4" in aliases
+    assert "openai-codex/gpt-5.4" in aliases
+    assert "minimax/MiniMax-M2.7-primary" in aliases
     assert "minimax/MiniMax-M2.7" in aliases
 
 
@@ -49,8 +50,9 @@ def test_model_catalog_is_enabled():
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
 
-    assert catalog.is_model_enabled("openai-codex/gpt-5.3-codex") is True
-    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is True
+    assert catalog.is_model_enabled("openai-codex/gpt-5.3-codex") is False
+    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is False
+    assert catalog.is_model_enabled("minimax/MiniMax-M2.7-primary") is True
     assert catalog.is_model_enabled("nonexistent") is False
 
 
@@ -58,4 +60,4 @@ def test_model_catalog_len():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
-    assert len(catalog) == 6
+    assert len(catalog) == 9
