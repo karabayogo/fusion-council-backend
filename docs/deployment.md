@@ -152,10 +152,14 @@ Set via `commonEnv` in the Helm values, or via a Kubernetes Secret referenced in
 |---|---|---|
 | `SERVICE_API_KEYS` | Comma-separated bearer tokens for callers | `dev-key-1,dev-key-2` |
 | `SERVICE_ADMIN_API_KEYS` | Admin tokens (cancel, diagnostics) | `admin-key-1` |
-| `MINIMAX_TOKEN_PLAN_API_KEY` | MiniMax Token Plan API key | — |
+| `MINIMAX_API_KEY` | MiniMax Token Plan API key | — |
 | `MINIMAX_ANTHROPIC_BASE_URL` | MiniMax Anthropic-compatible base URL | `https://api.minimax.io/anthropic` |
 | `OLLAMA_API_KEY` | Ollama Cloud API key | — |
 | `OLLAMA_BASE_URL` | Ollama Cloud base URL | `https://ollama.com` |
+| `OPENAI_CODEX_API_KEY` | API key for `openai_codex` provider | — |
+| `OPENAI_CODEX_BASE_URL` | Base URL for OpenAI-compatible Codex endpoint | `https://api.openai.com/v1` |
+| `OPENCODE_GO_API_KEY` | API key for `opencode_go` provider | — |
+| `OPENCODE_GO_BASE_URL` | Base URL for OpenAI-compatible OpenCode-Go endpoint | `https://api.opencode.go/v1` |
 | `DATABASE_PATH` | SQLite DB path inside container | `/app/data/fusion_council.db` |
 | `MODEL_CATALOG_PATH` | Path to models YAML | `/app/config/models.yaml` |
 | `APP_ENV` | `development` / `staging` / `production` | `development` |

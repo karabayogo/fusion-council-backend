@@ -14,53 +14,53 @@ logger = get_logger("fusion_council_service.model_catalog")
 
 # Default model selection constants
 FUSION_ACTIVE_TRIO = [
-    "minimax-portal/MiniMax-M2.7",
-    "ollama/glm-5.1:cloud",
-    "ollama/qwen3.5:cloud",
+    "openai-codex/gpt-5.3-codex",
+    "opencode-go/gpt-5.4",
+    "minimax/MiniMax-M2.7",
 ]
 
 FUSION_FALLBACK_QUEUE = [
-    "ollama/kimi-k2.5:cloud",
-    "ollama/minimax-m2.7:cloud",
+    "opencode-go/kimi-k2.6",
+    "opencode-go/deepseek-v4-pro",
 ]
 
 COUNCIL_ACTIVE_TRIO = [
-    "minimax-portal/MiniMax-M2.7",
-    "ollama/glm-5.1:cloud",
-    "ollama/qwen3.5:cloud",
+    "openai-codex/gpt-5.3-codex",
+    "opencode-go/gpt-5.4",
+    "minimax/MiniMax-M2.7",
 ]
 
 COUNCIL_FALLBACK_QUEUE = [
-    "ollama/kimi-k2.5:cloud",
-    "ollama/minimax-m2.7:cloud",
+    "opencode-go/kimi-k2.6",
+    "opencode-go/deepseek-v4-pro",
 ]
 
-SINGLE_DEFAULT_MODEL = "minimax-portal/MiniMax-M2.7"
+SINGLE_DEFAULT_MODEL = "openai-codex/gpt-5.3-codex"
 
 # Synthesis model order
 SYNTHESIS_MODEL_ORDER = [
-    "ollama/qwen3.5:cloud",
-    "minimax-portal/MiniMax-M2.7",
+    "opencode-go/qwen3.6-plus",
+    "openai-codex/gpt-5.3-codex",
 ]
 
 # Verification model order
 VERIFICATION_MODEL_ORDER = [
-    "ollama/glm-5.1:cloud",
-    "ollama/kimi-k2.5:cloud",
-    "minimax-portal/MiniMax-M2.7",
+    "opencode-go/kimi-k2.6",
+    "opencode-go/deepseek-v4-pro",
+    "minimax/MiniMax-M2.7",
 ]
 
 # Council synthesis model order
 COUNCIL_SYNTHESIS_MODEL_ORDER = [
-    "minimax-portal/MiniMax-M2.7",
-    "ollama/qwen3.5:cloud",
+    "openai-codex/gpt-5.3-codex",
+    "opencode-go/qwen3.6-plus",
 ]
 
 # Council verification model order
 COUNCIL_VERIFICATION_MODEL_ORDER = [
-    "ollama/glm-5.1:cloud",
-    "ollama/kimi-k2.5:cloud",
-    "ollama/minimax-m2.7:cloud",
+    "opencode-go/kimi-k2.6",
+    "opencode-go/deepseek-v4-pro",
+    "minimax/MiniMax-M2.7",
 ]
 
 
@@ -165,24 +165,95 @@ def validate_ollama_models(api_key: str, base_url: str, expected_models: list[st
     return errors
 
 
+def validate_openai_compatible_models(api_key: str, base_url: str, expected_models: list[str], provider_label: str) -> dict[str, str]:
+    """Validate OpenAI-compatible models by calling /models.
+    Returns a dict of {provider_model: validation_error} for any missing models.
+    Set SKIP_PROVIDER_VALIDATION=1 to skip this check entirely.
+    """
+    import os
+    if os.environ.get("SKIP_PROVIDER_VALIDATION", "").strip() in ("1", "true", "yes"):
+        logger.info(f"{provider_label} validation skipped (SKIP_PROVIDER_VALIDATION=1)", event_type="model.validation_skipped")
+        return {}
+
+    errors = {}
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", [])
+        available = {m.get("id") for m in data if m.get("id")}
+        for model_name in expected_models:
+            if model_name not in available:
+                errors[model_name] = f"Model '{model_name}' not found in {provider_label} /models"
+        if not errors:
+            logger.info(f"{provider_label} validation passed", event_type="model.validated")
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"{provider_label} /models request failed: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"{provider_label} validation error: {e}") from e
+
+    return errors
+
+
 def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None) -> ModelCatalog:
     """Load the model catalog YAML, validate providers, persist to DB.
     Raises on validation failure so the app exits with a non-zero code.
     """
     models = load_yaml_catalog(settings.MODEL_CATALOG_PATH)
 
-    # Validate MiniMax
+    # Validate MiniMax only if any minimax models are configured
     minimax_models = [m for m in models if m["provider"] == "minimax_token_plan"]
-    validate_minimax(settings.MINIMAX_API_KEY, settings.MINIMAX_ANTHROPIC_BASE_URL)
+    if minimax_models:
+        if not settings.minimax_api_key_effective:
+            raise RuntimeError("MINIMAX_API_KEY is required when provider minimax_token_plan is configured")
+        validate_minimax(settings.minimax_api_key_effective, settings.MINIMAX_ANTHROPIC_BASE_URL)
 
-    # Validate Ollama
+    # Validate Ollama only if any ollama models are configured
     ollama_models = [m for m in models if m["provider"] == "ollama_cloud"]
     ollama_provider_models = [m["provider_model"] for m in ollama_models]
-    ollama_errors = validate_ollama_models(settings.OLLAMA_API_KEY, settings.OLLAMA_BASE_URL, ollama_provider_models)
-    if ollama_errors:
-        for model_name, error in ollama_errors.items():
-            logger.error(f"Ollama model validation failed: {error}")
-        raise RuntimeError(f"Ollama model validation failed: {list(ollama_errors.values())}")
+    if ollama_provider_models:
+        if not settings.OLLAMA_API_KEY:
+            raise RuntimeError("OLLAMA_API_KEY is required when provider ollama_cloud is configured")
+        ollama_errors = validate_ollama_models(settings.OLLAMA_API_KEY, settings.OLLAMA_BASE_URL, ollama_provider_models)
+        if ollama_errors:
+            for model_name, error in ollama_errors.items():
+                logger.error(f"Ollama model validation failed: {error}")
+            raise RuntimeError(f"Ollama model validation failed: {list(ollama_errors.values())}")
+
+    # Validate OpenAI Codex-compatible only if configured
+    openai_codex_models = [m["provider_model"] for m in models if m["provider"] == "openai_codex"]
+    if openai_codex_models:
+        if not settings.OPENAI_CODEX_API_KEY:
+            raise RuntimeError("OPENAI_CODEX_API_KEY is required when provider openai_codex is configured")
+        openai_codex_errors = validate_openai_compatible_models(
+            settings.OPENAI_CODEX_API_KEY,
+            settings.OPENAI_CODEX_BASE_URL,
+            openai_codex_models,
+            "OpenAI Codex",
+        )
+        if openai_codex_errors:
+            for model_name, error in openai_codex_errors.items():
+                logger.error(f"OpenAI Codex model validation failed: {error}")
+            raise RuntimeError(f"OpenAI Codex model validation failed: {list(openai_codex_errors.values())}")
+
+    # Validate OpenCode-Go-compatible only if configured
+    opencode_go_models = [m["provider_model"] for m in models if m["provider"] == "opencode_go"]
+    if opencode_go_models:
+        if not settings.OPENCODE_GO_API_KEY:
+            raise RuntimeError("OPENCODE_GO_API_KEY is required when provider opencode_go is configured")
+        opencode_go_errors = validate_openai_compatible_models(
+            settings.OPENCODE_GO_API_KEY,
+            settings.OPENCODE_GO_BASE_URL,
+            opencode_go_models,
+            "OpenCode-Go",
+        )
+        if opencode_go_errors:
+            for model_name, error in opencode_go_errors.items():
+                logger.error(f"OpenCode-Go model validation failed: {error}")
+            raise RuntimeError(f"OpenCode-Go model validation failed: {list(opencode_go_errors.values())}")
 
     # Persist to DB
     if db is not None:
