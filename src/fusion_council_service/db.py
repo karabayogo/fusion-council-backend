@@ -84,6 +84,8 @@ def new_session() -> Union[Session, sqlite3.Connection]:
     For PostgreSQL: returns a SQLAlchemy Session (caller must commit/close).
     For SQLite: returns a raw sqlite3.Connection (backward compat).
     """
+    if not _engine:
+        _detect_dialect()
     if _is_postgresql:
         if _SessionFactory is None:
             get_engine()  # initializes _SessionFactory
