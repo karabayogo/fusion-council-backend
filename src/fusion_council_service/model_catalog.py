@@ -14,52 +14,36 @@ logger = get_logger("fusion_council_service.model_catalog")
 
 # Default model selection constants
 FUSION_ACTIVE_TRIO = [
-    "opencode-go/gpt-5.4",
     "minimax/MiniMax-M2.7",
-    "opencode-go/qwen3.6-plus",
 ]
 
-FUSION_FALLBACK_QUEUE = [
-    "opencode-go/kimi-k2.6",
-    "opencode-go/deepseek-v4-pro",
-]
+FUSION_FALLBACK_QUEUE = []
 
 COUNCIL_ACTIVE_TRIO = [
-    "opencode-go/gpt-5.4",
     "minimax/MiniMax-M2.7",
-    "opencode-go/qwen3.6-plus",
 ]
 
-COUNCIL_FALLBACK_QUEUE = [
-    "opencode-go/kimi-k2.6",
-    "opencode-go/deepseek-v4-pro",
-]
+COUNCIL_FALLBACK_QUEUE = []
 
-SINGLE_DEFAULT_MODEL = "opencode-go/gpt-5.4"
+SINGLE_DEFAULT_MODEL = "minimax/MiniMax-M2.7"
 
 # Synthesis model order
 SYNTHESIS_MODEL_ORDER = [
-    "opencode-go/qwen3.6-plus",
-    "opencode-go/gpt-5.4",
+    "minimax/MiniMax-M2.7",
 ]
 
 # Verification model order
 VERIFICATION_MODEL_ORDER = [
-    "opencode-go/kimi-k2.6",
-    "opencode-go/deepseek-v4-pro",
     "minimax/MiniMax-M2.7",
 ]
 
 # Council synthesis model order
 COUNCIL_SYNTHESIS_MODEL_ORDER = [
-    "opencode-go/gpt-5.4",
-    "opencode-go/qwen3.6-plus",
+    "minimax/MiniMax-M2.7",
 ]
 
 # Council verification model order
 COUNCIL_VERIFICATION_MODEL_ORDER = [
-    "opencode-go/kimi-k2.6",
-    "opencode-go/deepseek-v4-pro",
     "minimax/MiniMax-M2.7",
 ]
 
@@ -243,8 +227,12 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
                 logger.error(f"OpenAI Codex model validation failed: {error}")
             raise RuntimeError(f"OpenAI Codex model validation failed: {list(openai_codex_errors.values())}")
 
-    # Validate OpenCode-Go-compatible only if configured
-    opencode_go_models = [m["provider_model"] for m in models if m["provider"] == "opencode_go"]
+    # Validate OpenCode-Go-compatible only if configured and enabled
+    opencode_go_models = [
+        m["provider_model"]
+        for m in models
+        if m["provider"] == "opencode_go" and m.get("enabled", False)
+    ]
     if opencode_go_models:
         if not settings.OPENCODE_GO_API_KEY:
             raise RuntimeError("OPENCODE_GO_API_KEY is required when provider opencode_go is configured")

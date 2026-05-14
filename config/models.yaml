@@ -26,7 +26,7 @@ models:
   - alias: opencode-go/deepseek-v4-pro
     provider: opencode_go
     provider_model: deepseek-v4-pro
-    enabled: true
+    enabled: false
     family: deepseek
     tier: frontier
     role_bias: creative
@@ -34,7 +34,7 @@ models:
   - alias: opencode-go/qwen3.6-plus
     provider: opencode_go
     provider_model: qwen3.6-plus
-    enabled: true
+    enabled: false
     family: qwen
     tier: strong
     role_bias: synthesis
@@ -42,7 +42,7 @@ models:
   - alias: opencode-go/kimi-k2.6
     provider: opencode_go
     provider_model: kimi-k2.6
-    enabled: true
+    enabled: false
     family: kimi
     tier: frontier
     role_bias: verification
