@@ -14,9 +14,9 @@ logger = get_logger("fusion_council_service.model_catalog")
 
 # Default model selection constants
 FUSION_ACTIVE_TRIO = [
-    "openai-codex/gpt-5.3-codex",
     "opencode-go/gpt-5.4",
     "minimax/MiniMax-M2.7",
+    "opencode-go/qwen3.6-plus",
 ]
 
 FUSION_FALLBACK_QUEUE = [
@@ -25,9 +25,9 @@ FUSION_FALLBACK_QUEUE = [
 ]
 
 COUNCIL_ACTIVE_TRIO = [
-    "openai-codex/gpt-5.3-codex",
     "opencode-go/gpt-5.4",
     "minimax/MiniMax-M2.7",
+    "opencode-go/qwen3.6-plus",
 ]
 
 COUNCIL_FALLBACK_QUEUE = [
@@ -35,12 +35,12 @@ COUNCIL_FALLBACK_QUEUE = [
     "opencode-go/deepseek-v4-pro",
 ]
 
-SINGLE_DEFAULT_MODEL = "openai-codex/gpt-5.3-codex"
+SINGLE_DEFAULT_MODEL = "opencode-go/gpt-5.4"
 
 # Synthesis model order
 SYNTHESIS_MODEL_ORDER = [
     "opencode-go/qwen3.6-plus",
-    "openai-codex/gpt-5.3-codex",
+    "opencode-go/gpt-5.4",
 ]
 
 # Verification model order
@@ -52,7 +52,7 @@ VERIFICATION_MODEL_ORDER = [
 
 # Council synthesis model order
 COUNCIL_SYNTHESIS_MODEL_ORDER = [
-    "openai-codex/gpt-5.3-codex",
+    "opencode-go/gpt-5.4",
     "opencode-go/qwen3.6-plus",
 ]
 
@@ -223,8 +223,12 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
                 logger.error(f"Ollama model validation failed: {error}")
             raise RuntimeError(f"Ollama model validation failed: {list(ollama_errors.values())}")
 
-    # Validate OpenAI Codex-compatible only if configured
-    openai_codex_models = [m["provider_model"] for m in models if m["provider"] == "openai_codex"]
+    # Validate OpenAI Codex-compatible only if configured and enabled
+    openai_codex_models = [
+        m["provider_model"]
+        for m in models
+        if m["provider"] == "openai_codex" and m.get("enabled", False)
+    ]
     if openai_codex_models:
         if not settings.OPENAI_CODEX_API_KEY:
             raise RuntimeError("OPENAI_CODEX_API_KEY is required when provider openai_codex is configured")

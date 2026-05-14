@@ -2,7 +2,7 @@ models:
   - alias: openai-codex/gpt-5.3-codex
     provider: openai_codex
     provider_model: gpt-5.3-codex
-    enabled: true
+    enabled: false
     family: gpt
     tier: frontier
     role_bias: primary
@@ -10,7 +10,7 @@ models:
   - alias: openai-codex/gpt-5.4
     provider: openai_codex
     provider_model: gpt-5.4
-    enabled: true
+    enabled: false
     family: gpt
     tier: frontier
     role_bias: reviewer
