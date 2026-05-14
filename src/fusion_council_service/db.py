@@ -64,7 +64,7 @@ def get_engine():
             pool_timeout=30,
         )
         _SessionFactory = sessionmaker(bind=_engine)
-        logger.info("PostgreSQL engine initialized", db_url=db_url.split("@")[0] + "@***")
+        logger.info(f"PostgreSQL engine initialized: {db_url.split(chr(64))[0]}@***")
     else:
         db_path = os.environ.get("DATABASE_PATH", ":memory:")
         if db_path != ":memory:":
