@@ -1,17 +1,33 @@
 models:
-  - alias: openai-codex/gpt-5.3-codex
-    provider: openai_codex
-    provider_model: gpt-5.3-codex
-    enabled: false
-    family: gpt
+  # - alias: openai-codex/gpt-5.3-codex
+  #   provider: openai_codex
+  #   provider_model: gpt-5.3-codex
+  #   enabled: false
+  #   family: gpt
+  #   tier: frontier
+  #   role_bias: primary
+
+  # - alias: openai-codex/gpt-5.4
+  #   provider: openai_codex
+  #   provider_model: gpt-5.4
+  #   enabled: false
+  #   family: gpt
+  #   tier: frontier
+  #   role_bias: reviewer
+
+  - alias: opencode-go/deepseek-v4-pro
+    provider: opencode_go
+    provider_model: deepseek-v4-pro
+    enabled: true
+    family: deepseek
     tier: frontier
     role_bias: primary
 
-  - alias: openai-codex/gpt-5.4
-    provider: openai_codex
-    provider_model: gpt-5.4
-    enabled: false
-    family: gpt
+  - alias: opencode-go/qwen3.6-plus
+    provider: opencode_go
+    provider_model: qwen3.6-plus
+    enabled: true
+    family: qwen
     tier: frontier
     role_bias: reviewer
 
@@ -23,23 +39,7 @@ models:
     tier: frontier
     role_bias: backup
 
-  - alias: minimax/MiniMax-M2.7-primary
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
-    enabled: true
-    family: minimax
-    tier: frontier
-    role_bias: primary
-
-  - alias: minimax/MiniMax-M2.7-reviewer
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
-    enabled: true
-    family: minimax
-    tier: frontier
-    role_bias: reviewer
-
-  - alias: minimax/MiniMax-M2.7-synthesis
+  - alias: minimax/MiniMax-M2.7
     provider: minimax_token_plan
     provider_model: MiniMax-M2.7
     enabled: true
@@ -50,23 +50,23 @@ models:
   - alias: opencode-go/deepseek-v4-pro
     provider: opencode_go
     provider_model: deepseek-v4-pro
-    enabled: false
+    enabled: true
     family: deepseek
     tier: frontier
     role_bias: creative
 
-  - alias: opencode-go/qwen3.6-plus
-    provider: opencode_go
-    provider_model: qwen3.6-plus
-    enabled: false
-    family: qwen
-    tier: strong
+  - alias: minimax/MiniMax-M2.7
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
     role_bias: synthesis
 
   - alias: opencode-go/kimi-k2.6
     provider: opencode_go
     provider_model: kimi-k2.6
-    enabled: false
+    enabled: true
     family: kimi
     tier: frontier
     role_bias: verification

@@ -14,6 +14,9 @@ dependencies = [
     "orjson",
     "python-dotenv",
     "pyyaml",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary",
+    "alembic",
 ]
 
 [project.optional-dependencies]

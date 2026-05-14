@@ -8,7 +8,9 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     HOST: str = "0.0.0.0"
     PORT: int = 8080
-    DATABASE_PATH: str
+    # Database: either DATABASE_URL (PostgreSQL) or DATABASE_PATH (SQLite)
+    DATABASE_URL: str = ""
+    DATABASE_PATH: str = ""
     SERVICE_API_KEYS: str
     SERVICE_ADMIN_API_KEYS: str
 

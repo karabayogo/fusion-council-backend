@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
-from fusion_council_service.db import open_db_connection, initialize_schema
+from fusion_council_service.db import new_session, initialize_schema, close_db, is_postgresql
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
@@ -48,34 +48,36 @@ class Worker:
 
     def __init__(
         self,
-        db_path: str,
-        registry: ProviderRegistry,
-        catalog: ModelCatalog,
+        db_path: str = "",
+        db_url: str = "",
+        registry: ProviderRegistry = None,
+        catalog: ModelCatalog = None,
         poll_interval_ms: int = 1000,
         heartbeat_interval_ms: int = 5000,
         stale_run_threshold_seconds: int = 30,
     ):
         self._db_path = db_path
+        self._db_url = db_url
         self._registry = registry
         self._catalog = catalog
         self._poll_interval_s = poll_interval_ms / 1000.0
         self._heartbeat_interval_s = heartbeat_interval_ms / 1000.0
         self._stale_run_threshold_seconds = stale_run_threshold_seconds
         self._running = False
-        self._db: Optional[sqlite3.Connection] = None
+        self._db = None
         self._current_run_task: Optional[asyncio.Task] = None
         self._worker_id = f"worker-{int(time.time())}"
 
-    def _get_db(self) -> sqlite3.Connection:
+    def _get_db(self):
         if self._db is None:
-            self._db = open_db_connection(self._db_path)
+            self._db = new_session()
             initialize_schema(self._db)
         return self._db
 
     def _reset_db(self) -> None:
         """Close and reset the cached database connection.
 
-        Called when an OperationalError (e.g. 'database is locked') poisons the
+        Called when a connection error poisons the
         connection state. A fresh connection will be opened on the next _get_db call.
         """
         if self._db is not None:
@@ -121,7 +123,7 @@ class Worker:
         total = run.get("deadline_seconds", 60)
         return should_degrade(run["mode"], elapsed, total)
 
-    async def _finalize_degraded(self, db: sqlite3.Connection, run_id: str, mode: str,
+    async def _finalize_degraded(self, db: object, run_id: str, mode: str,
                                    reason: str, best_text: str, confidence: float = 0.5) -> None:
         """Finalize a run as succeeded_degraded due to deadline pressure."""
         logger.info(f"Finalizing as succeeded_degraded: {reason}", run_id=run_id)
@@ -136,7 +138,7 @@ class Worker:
         update_run_status(db, run_id, "succeeded_degraded", final_answer=best_text,
                           final_confidence=confidence, degraded_reason=reason)
 
-    def _try_fallback(self, db: sqlite3.Connection, run: dict, failed_alias: str) -> Optional[dict]:
+    def _try_fallback(self, db: object, run: dict, failed_alias: str) -> Optional[dict]:
         """Try to promote a fallback model for a failed primary.
         Returns the fallback model dict or None.
         """
@@ -151,7 +153,7 @@ class Worker:
             return model
         return None
 
-    async def _call_provider_async(self, request, db: sqlite3.Connection, run_id: str,
+    async def _call_provider_async(self, request, db: object, run_id: str,
                                     timeout_seconds: int = 120):
         """Call provider in thread pool and return result.
 
@@ -180,7 +182,7 @@ class Worker:
                 output_tokens=None,
             )
 
-    async def _run_single(self, db: sqlite3.Connection, run: dict) -> None:
+    async def _run_single(self, db: object, run: dict) -> None:
         """Execute a single-mode run."""
 
         run_id = run["run_id"]
@@ -256,7 +258,7 @@ class Worker:
                     return
             await self._fail_run(db, run_id, err_code or "PROVIDER_FAILED", err_msg or "Single model failed")
 
-    async def _run_fusion(self, db: sqlite3.Connection, run: dict) -> None:
+    async def _run_fusion(self, db: object, run: dict) -> None:
         """Execute a fusion-mode run."""
 
         run_id = run["run_id"]
@@ -442,7 +444,7 @@ class Worker:
         emit_run_completed(db, run_id, final_answer, confidence=confidence)
         update_run_status(db, run_id, "succeeded", final_answer=final_answer, final_confidence=confidence)
 
-    async def _run_council(self, db: sqlite3.Connection, run: dict) -> None:
+    async def _run_council(self, db: object, run: dict) -> None:
         """Execute a council-mode run."""
 
         run_id = run["run_id"]
@@ -700,7 +702,7 @@ class Worker:
         emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
         update_run_status(db, run_id, "succeeded", final_answer=synthesis_text, final_confidence=confidence)
 
-    async def _fail_run(self, db: sqlite3.Connection, run_id: str, error_code: str, error_message: str) -> None:
+    async def _fail_run(self, db: object, run_id: str, error_code: str, error_message: str) -> None:
         db.execute("UPDATE runs SET status='failed', error_code=?, error_message=?, finished_at=? WHERE run_id=?",
                    (error_code, error_message, utc_now_iso(), run_id))
         db.commit()

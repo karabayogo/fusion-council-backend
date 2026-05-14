@@ -1,9 +1,5 @@
 -- fusion-council-service schema
--- SQLite only. WAL mode. Do not add PostgreSQL in v1.
-
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-PRAGMA foreign_keys=ON;
+-- Compatible with both PostgreSQL (production) and SQLite (tests/local).
 
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,

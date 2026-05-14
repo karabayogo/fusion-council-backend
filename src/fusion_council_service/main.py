@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fusion_council_service.api.routes import init_api, router
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.config import Settings
-from fusion_council_service.db import initialize_schema
+from fusion_council_service.db import initialize_schema, new_session, is_postgresql
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
 from fusion_council_service.providers.registry import build_provider_registry
@@ -51,6 +51,7 @@ async def lifespan(app: FastAPI):
 
     # Load settings from environment
     _settings = Settings(
+        DATABASE_URL=os.environ.get("DATABASE_URL", ""),
         DATABASE_PATH=os.environ.get("DATABASE_PATH", "./data/fusion_council.db"),
         SERVICE_API_KEYS=os.environ.get("SERVICE_API_KEYS", ""),
         SERVICE_ADMIN_API_KEYS=os.environ.get("SERVICE_ADMIN_API_KEYS", ""),
@@ -73,23 +74,20 @@ async def lifespan(app: FastAPI):
         MODEL_CATALOG_PATH=os.environ.get("MODEL_CATALOG_PATH", "./config/models.yaml"),
     )
 
-    # Validate required settings
-    required = ["DATABASE_PATH", "SERVICE_API_KEYS"]
-    for key in required:
-        val = getattr(_settings, key, None)
-        if not val:
-            logger.error(f"Missing required environment variable: {key}")
-            raise RuntimeError(f"Missing required environment variable: {key}")
-
-    if not _settings.service_api_keys:
+    # Validate required settings — accept either DATABASE_URL or DATABASE_PATH
+    db_url = getattr(_settings, "DATABASE_URL", "")
+    db_path = getattr(_settings, "DATABASE_PATH", "")
+    if not db_url and not db_path:
+        logger.error("Missing required environment variable: DATABASE_URL or DATABASE_PATH")
+        raise RuntimeError("Missing required environment variable: DATABASE_URL or DATABASE_PATH")
+    if not getattr(_settings, "SERVICE_API_KEYS", None):
         logger.error("No SERVICE_API_KEYS configured")
         raise RuntimeError("SERVICE_API_KEYS must contain at least one key")
 
     logger.info(f"API keys loaded: <{len(_settings.service_api_keys)} service keys>, <{len(_settings.service_admin_api_keys)} admin keys>")
 
     # Initialize DB
-    from fusion_council_service.db import open_db_connection
-    db = open_db_connection(_settings.DATABASE_PATH)
+    db = new_session()
     initialize_schema(db)
 
     # Load and validate model catalog

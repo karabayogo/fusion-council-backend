@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from dotenv import load_dotenv
 from fusion_council_service.config import Settings
-from fusion_council_service.db import open_db_connection, initialize_schema
+from fusion_council_service.db import new_session, initialize_schema
 from fusion_council_service.domain.worker_loop import Worker
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
@@ -21,6 +21,7 @@ logger = get_logger("fusion_council_service")
 
 # Load settings from environment
 settings = Settings(
+    DATABASE_URL=os.environ.get("DATABASE_URL", ""),
     DATABASE_PATH=os.environ.get("DATABASE_PATH", "./data/fusion_council.db"),
     SERVICE_API_KEYS=os.environ.get("SERVICE_API_KEYS", "worker-only"),
     SERVICE_ADMIN_API_KEYS=os.environ.get("SERVICE_ADMIN_API_KEYS", ""),
@@ -35,7 +36,7 @@ def main() -> None:
     load_dotenv()  # noqa: E402 (must be before Settings())
     logger.info("Starting Fusion Council worker", event_type="worker.start")
 
-    db = open_db_connection(settings.DATABASE_PATH)
+    db = new_session()
     initialize_schema(db)
 
     catalog = load_and_validate_catalog(settings, db)
@@ -45,6 +46,7 @@ def main() -> None:
 
     worker = Worker(
         db_path=settings.DATABASE_PATH,
+        db_url=settings.DATABASE_URL,
         registry=registry,
         catalog=catalog,
         poll_interval_ms=settings.WORKER_POLL_INTERVAL_MS,

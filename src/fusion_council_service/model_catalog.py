@@ -8,6 +8,7 @@ import httpx
 import yaml
 
 from fusion_council_service.clock import utc_now_iso
+from fusion_council_service.db import execute_sql, commit_tx, is_postgresql
 from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.model_catalog")
@@ -227,15 +228,35 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
     if db is not None:
         now = utc_now_iso()
         for m in models:
-            db.execute(
-                """
-                INSERT OR REPLACE INTO model_catalog
-                    (alias, provider, provider_model, family, tier, enabled, validated_at, validation_error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (m["alias"], m["provider"], m["provider_model"], m["family"],
-                 m["tier"], 1 if m["enabled"] else 0, now),
-            )
-        db.commit()
+            if is_postgresql():
+                execute_sql(
+                    db,
+                    """
+                    INSERT INTO model_catalog
+                        (alias, provider, provider_model, family, tier, enabled, validated_at, validation_error)
+                    VALUES (:alias, :provider, :provider_model, :family, :tier, :enabled, :validated_at, NULL)
+                    ON CONFLICT (alias) DO UPDATE SET
+                        provider = EXCLUDED.provider, provider_model = EXCLUDED.provider_model,
+                        family = EXCLUDED.family, tier = EXCLUDED.tier, enabled = EXCLUDED.enabled,
+                        validated_at = EXCLUDED.validated_at, validation_error = NULL
+                    """,
+                    {
+                        "alias": m["alias"], "provider": m["provider"],
+                        "provider_model": m["provider_model"], "family": m["family"],
+                        "tier": m["tier"], "enabled": 1 if m["enabled"] else 0,
+                        "validated_at": now,
+                    },
+                )
+            else:
+                db.execute(
+                    """
+                    INSERT OR REPLACE INTO model_catalog
+                        (alias, provider, provider_model, family, tier, enabled, validated_at, validation_error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (m["alias"], m["provider"], m["provider_model"], m["family"],
+                     m["tier"], 1 if m["enabled"] else 0, now),
+                )
+        commit_tx(db)
 
     return ModelCatalog(models)

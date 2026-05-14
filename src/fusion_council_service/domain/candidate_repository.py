@@ -1,13 +1,18 @@
 """Candidate repository — CRUD operations on run_candidates table."""
 
-import sqlite3
 from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
+from fusion_council_service.db import (
+    commit_tx,
+    execute_sql_all,
+    execute_sql_one,
+    execute_sql,
+)
 
 
 def insert_candidate(
-    db: sqlite3.Connection,
+    db,
     run_id: str,
     candidate_id: str,
     alias: str,
@@ -16,29 +21,40 @@ def insert_candidate(
     stage: str,
     status: str,
     created_at: str,
-) -> dict:
-    cursor = db.cursor()
-    cursor.execute(
+) -> Optional[dict]:
+    execute_sql(
+        db,
         """
         INSERT INTO run_candidates
             (candidate_id, run_id, alias, provider, provider_model, stage, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (:candidate_id, :run_id, :alias, :provider, :provider_model, :stage, :status, :created_at, :updated_at)
         """,
-        (candidate_id, run_id, alias, provider, provider_model, stage, status, created_at, created_at),
+        {
+            "candidate_id": candidate_id,
+            "run_id": run_id,
+            "alias": alias,
+            "provider": provider,
+            "provider_model": provider_model,
+            "stage": stage,
+            "status": status,
+            "created_at": created_at,
+            "updated_at": created_at,
+        },
     )
-    db.commit()
+    commit_tx(db)
     return get_candidate(db, candidate_id)
 
 
-def get_candidate(db: sqlite3.Connection, candidate_id: str) -> Optional[dict]:
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM run_candidates WHERE candidate_id = ?", (candidate_id,))
-    row = cursor.fetchone()
-    return dict(row) if row else None
+def get_candidate(db, candidate_id: str) -> Optional[dict]:
+    return execute_sql_one(
+        db,
+        "SELECT * FROM run_candidates WHERE candidate_id = :candidate_id",
+        {"candidate_id": candidate_id},
+    )
 
 
 def update_candidate_result(
-    db: sqlite3.Connection,
+    db,
     candidate_id: str,
     status: str,
     raw_answer: Optional[str] = None,
@@ -50,26 +66,36 @@ def update_candidate_result(
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    cursor = db.cursor()
-    cursor.execute(
+    execute_sql(
+        db,
         """
         UPDATE run_candidates
-        SET status = ?, raw_answer = ?, normalized_answer = ?, score_json = ?,
-            latency_ms = ?, input_tokens = ?, output_tokens = ?,
-            error_code = ?, error_message = ?, updated_at = ?
-        WHERE candidate_id = ?
+        SET status = :status, raw_answer = :raw_answer, normalized_answer = :normalized_answer,
+            score_json = :score_json, latency_ms = :latency_ms, input_tokens = :input_tokens,
+            output_tokens = :output_tokens, error_code = :error_code,
+            error_message = :error_message, updated_at = :updated_at
+        WHERE candidate_id = :candidate_id
         """,
-        (status, raw_answer, normalized_answer, score_json,
-         latency_ms, input_tokens, output_tokens,
-         error_code, error_message, utc_now_iso(), candidate_id),
+        {
+            "status": status,
+            "raw_answer": raw_answer,
+            "normalized_answer": normalized_answer,
+            "score_json": score_json,
+            "latency_ms": latency_ms,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "error_code": error_code,
+            "error_message": error_message,
+            "updated_at": utc_now_iso(),
+            "candidate_id": candidate_id,
+        },
     )
-    db.commit()
+    commit_tx(db)
 
 
-def list_candidates_for_run(db: sqlite3.Connection, run_id: str) -> list[dict]:
-    cursor = db.cursor()
-    cursor.execute(
-        "SELECT * FROM run_candidates WHERE run_id = ? ORDER BY created_at",
-        (run_id,),
+def list_candidates_for_run(db, run_id: str) -> list[dict]:
+    return execute_sql_all(
+        db,
+        "SELECT * FROM run_candidates WHERE run_id = :run_id ORDER BY created_at",
+        {"run_id": run_id},
     )
-    return [dict(row) for row in cursor.fetchall()]

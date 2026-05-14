@@ -9,6 +9,7 @@ import pytest
 # Set test env before importing the app
 os.environ.update({
     "DATABASE_PATH": ":memory:",
+    "DATABASE_URL": "",
     "SERVICE_API_KEYS": "test-user-key,test-user-key-2",
     "SERVICE_ADMIN_API_KEYS": "test-admin-key",
     "MINIMAX_TOKEN_PLAN_API_KEY": "test-minimax-key",

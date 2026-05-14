@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import sqlite3
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -11,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fusion_council_service.auth import extract_bearer, resolve_role
 from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
 from fusion_council_service.config import Settings
-from fusion_council_service.db import open_db_connection, initialize_schema
+from fusion_council_service.db import new_session, initialize_schema, is_postgresql
 from fusion_council_service.domain.budget import resolve_deadline, select_models_for_mode
 from fusion_council_service.domain.event_emitter import emit_run_accepted
 from fusion_council_service.domain.event_repository import list_events_for_run
@@ -22,17 +21,17 @@ from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.api")
 
-# Global db connection for API (shared with worker in same process)
-_api_db: Optional[sqlite3.Connection] = None
+# Global db connection for API
+_api_db = None
 _settings: Optional[Settings] = None
 
 
-def get_api_db() -> sqlite3.Connection:
+def get_api_db():
     global _api_db
     if _api_db is None:
         if _settings is None:
             raise RuntimeError("Settings not initialized")
-        _api_db = open_db_connection(_settings.DATABASE_PATH)
+        _api_db = new_session()
         initialize_schema(_api_db)
     return _api_db
 
@@ -40,7 +39,7 @@ def get_api_db() -> sqlite3.Connection:
 def init_api(settings: Settings) -> None:
     global _settings, _api_db
     _settings = settings
-    _api_db = open_db_connection(settings.DATABASE_PATH)
+    _api_db = new_session()
     initialize_schema(_api_db)
     logger.info("API DB initialized")
 
