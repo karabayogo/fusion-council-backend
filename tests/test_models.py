@@ -11,10 +11,11 @@ from fusion_council_service.model_catalog import (
 def test_load_yaml_catalog():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
-    assert len(models) == 5
+    assert len(models) == 6
     aliases = [m["alias"] for m in models]
-    assert "minimax-portal/MiniMax-M2.7" in aliases
-    assert "ollama/glm-5.1:cloud" in aliases
+    assert "openai-codex/gpt-5.3-codex" in aliases
+    assert "opencode-go/gpt-5.4" in aliases
+    assert "minimax/MiniMax-M2.7" in aliases
 
 
 def test_duplicate_alias_raises():
@@ -39,7 +40,7 @@ def test_model_catalog_get():
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
 
-    assert catalog.get("ollama/glm-5.1:cloud")["provider"] == "ollama_cloud"
+    assert catalog.get("openai-codex/gpt-5.3-codex")["provider"] == "openai_codex"
     assert catalog.get("nonexistent") is None
 
 
@@ -48,8 +49,8 @@ def test_model_catalog_is_enabled():
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
 
-    assert catalog.is_model_enabled("minimax-portal/MiniMax-M2.7") is True
-    assert catalog.is_model_enabled("ollama/glm-5.1:cloud") is True
+    assert catalog.is_model_enabled("openai-codex/gpt-5.3-codex") is True
+    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is True
     assert catalog.is_model_enabled("nonexistent") is False
 
 
@@ -57,4 +58,4 @@ def test_model_catalog_len():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
-    assert len(catalog) == 5
+    assert len(catalog) == 6

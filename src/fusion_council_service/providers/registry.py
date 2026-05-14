@@ -5,6 +5,7 @@ from typing import Dict
 from fusion_council_service.domain.types import ProviderGenerateRequest, ProviderGenerateResult
 from fusion_council_service.providers.minimax_token_plan import MiniMaxTokenPlanProvider
 from fusion_council_service.providers.ollama_cloud import OllamaCloudProvider
+from fusion_council_service.providers.openai_compatible import OpenAICompatibleProvider
 
 
 class ProviderRegistry:
@@ -40,7 +41,7 @@ def build_provider_registry(settings) -> ProviderRegistry:
     registry.register(
         "minimax_token_plan",
         MiniMaxTokenPlanProvider(
-            api_key=settings.MINIMAX_API_KEY,
+            api_key=settings.minimax_api_key_effective,
             base_url=settings.MINIMAX_ANTHROPIC_BASE_URL,
         ),
     )
@@ -51,6 +52,24 @@ def build_provider_registry(settings) -> ProviderRegistry:
         OllamaCloudProvider(
             api_key=settings.OLLAMA_API_KEY,
             base_url=settings.OLLAMA_BASE_URL,
+        ),
+    )
+
+    # OpenAI Codex via OpenAI-compatible chat/completions
+    registry.register(
+        "openai_codex",
+        OpenAICompatibleProvider(
+            api_key=settings.OPENAI_CODEX_API_KEY,
+            base_url=settings.OPENAI_CODEX_BASE_URL,
+        ),
+    )
+
+    # OpenCode-Go via OpenAI-compatible chat/completions
+    registry.register(
+        "opencode_go",
+        OpenAICompatibleProvider(
+            api_key=settings.OPENCODE_GO_API_KEY,
+            base_url=settings.OPENCODE_GO_BASE_URL,
         ),
     )
 

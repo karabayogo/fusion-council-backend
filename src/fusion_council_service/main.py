@@ -55,9 +55,14 @@ async def lifespan(app: FastAPI):
         SERVICE_API_KEYS=os.environ.get("SERVICE_API_KEYS", ""),
         SERVICE_ADMIN_API_KEYS=os.environ.get("SERVICE_ADMIN_API_KEYS", ""),
         MINIMAX_API_KEY=os.environ.get("MINIMAX_API_KEY", ""),
+        MINIMAX_TOKEN_PLAN_API_KEY=os.environ.get("MINIMAX_TOKEN_PLAN_API_KEY", ""),
         OLLAMA_API_KEY=os.environ.get("OLLAMA_API_KEY", ""),
+        OPENAI_CODEX_API_KEY=os.environ.get("OPENAI_CODEX_API_KEY", ""),
+        OPENCODE_GO_API_KEY=os.environ.get("OPENCODE_GO_API_KEY", ""),
         MINIMAX_ANTHROPIC_BASE_URL=os.environ.get("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"),
         OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", "https://ollama.com"),
+        OPENAI_CODEX_BASE_URL=os.environ.get("OPENAI_CODEX_BASE_URL", "https://api.openai.com/v1"),
+        OPENCODE_GO_BASE_URL=os.environ.get("OPENCODE_GO_BASE_URL", "https://api.opencode.go/v1"),
         APP_ENV=os.environ.get("APP_ENV", "development"),
         HOST=os.environ.get("HOST", "0.0.0.0"),
         PORT=int(os.environ.get("PORT", "8080")),
@@ -69,7 +74,7 @@ async def lifespan(app: FastAPI):
     )
 
     # Validate required settings
-    required = ["DATABASE_PATH", "SERVICE_API_KEYS", "MINIMAX_API_KEY", "OLLAMA_API_KEY"]
+    required = ["DATABASE_PATH", "SERVICE_API_KEYS"]
     for key in required:
         val = getattr(_settings, key, None)
         if not val:

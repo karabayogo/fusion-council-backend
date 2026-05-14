@@ -12,7 +12,7 @@ from pydantic import BaseModel
 class ProviderGenerateRequest:
     """Normalized request object passed to any model provider."""
     alias: str                # internal alias like "ollama/glm-5.1:cloud"
-    provider: str             # "minimax_token_plan" or "ollama_cloud"
+    provider: str             # "minimax_token_plan", "ollama_cloud", "openai_codex", or "opencode_go"
     provider_model: str       # provider-specific model name like "glm-5.1"
     system_prompt: Optional[str]
     user_prompt: str
