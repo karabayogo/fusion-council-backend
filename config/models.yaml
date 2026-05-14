@@ -39,7 +39,7 @@ models:
     tier: frontier
     role_bias: backup
 
-  - alias: minimax/MiniMax-M2.7
+  - alias: minimax/MiniMax-M2.7-synthesis
     provider: minimax_token_plan
     provider_model: MiniMax-M2.7
     enabled: true
@@ -47,21 +47,13 @@ models:
     tier: frontier
     role_bias: synthesis
 
-  - alias: opencode-go/deepseek-v4-pro
+  - alias: opencode-go/deepseek-v4-pro-creative
     provider: opencode_go
     provider_model: deepseek-v4-pro
     enabled: true
     family: deepseek
     tier: frontier
     role_bias: creative
-
-  - alias: minimax/MiniMax-M2.7
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
-    enabled: true
-    family: minimax
-    tier: frontier
-    role_bias: synthesis
 
   - alias: opencode-go/kimi-k2.6
     provider: opencode_go
