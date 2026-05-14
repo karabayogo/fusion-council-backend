@@ -12,48 +12,13 @@ from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.model_catalog")
 
-# Default model selection constants
-FUSION_ACTIVE_TRIO = [
-    "minimax/MiniMax-M2.7-primary",
-    "minimax/MiniMax-M2.7-reviewer",
-    "minimax/MiniMax-M2.7-synthesis",
-]
-
-FUSION_FALLBACK_QUEUE = []
-
-COUNCIL_ACTIVE_TRIO = [
-    "minimax/MiniMax-M2.7-primary",
-    "minimax/MiniMax-M2.7-reviewer",
-    "minimax/MiniMax-M2.7-synthesis",
-]
-
-COUNCIL_FALLBACK_QUEUE = []
-
-SINGLE_DEFAULT_MODEL = "minimax/MiniMax-M2.7"
-
-# Synthesis model order
-SYNTHESIS_MODEL_ORDER = [
-    "minimax/MiniMax-M2.7-synthesis",
-    "minimax/MiniMax-M2.7",
-]
-
-# Verification model order
-VERIFICATION_MODEL_ORDER = [
-    "minimax/MiniMax-M2.7-reviewer",
-    "minimax/MiniMax-M2.7",
-]
-
-# Council synthesis model order
-COUNCIL_SYNTHESIS_MODEL_ORDER = [
-    "minimax/MiniMax-M2.7-synthesis",
-    "minimax/MiniMax-M2.7",
-]
-
-# Council verification model order
-COUNCIL_VERIFICATION_MODEL_ORDER = [
-    "minimax/MiniMax-M2.7-reviewer",
-    "minimax/MiniMax-M2.7",
-]
+# Model selection is config-driven.  These role-preference lists define how
+# enabled entries from config/models.yaml are ordered; they intentionally do
+# not name provider/model aliases.  The catalog file remains the source of
+# truth for which models exist and whether they are enabled.
+SINGLE_ROLE_ORDER = ["primary", "backup", "synthesis", "reviewer", "verification", "creative"]
+FUSION_ROLE_ORDER = ["primary", "reviewer", "synthesis", "creative", "verification", "backup"]
+COUNCIL_ROLE_ORDER = ["primary", "reviewer", "creative", "synthesis", "verification", "backup"]
 
 
 class ModelCatalog:
@@ -64,6 +29,9 @@ class ModelCatalog:
 
     def all_models(self) -> list[dict]:
         return list(self._models.values())
+
+    def enabled_models(self) -> list[dict]:
+        return [m for m in self.all_models() if m.get("enabled", False)]
 
     def get(self, alias: str) -> Optional[dict]:
         return self._models.get(alias)

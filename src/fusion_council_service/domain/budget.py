@@ -135,14 +135,32 @@ def should_degrade(mode: str, elapsed_seconds: float, total_seconds: int) -> Opt
     return None
 
 
+def _models_ordered_by_role(catalog, role_order: list[str]) -> list[dict]:
+    """Return enabled catalog models ordered by role_bias and YAML order.
+
+    The YAML catalog is the source of truth. Code only defines role preference;
+    it does not hardcode aliases or providers.
+    """
+    enabled = catalog.enabled_models()
+    role_rank = {role: idx for idx, role in enumerate(role_order)}
+    yaml_order = {id(model): idx for idx, model in enumerate(enabled)}
+    return sorted(
+        enabled,
+        key=lambda m: (role_rank.get(m.get("role_bias"), len(role_rank)), yaml_order[id(m)]),
+    )
+
+
 def select_models_for_mode(mode: str, catalog, requested_models: Optional[list[str]] = None) -> list[dict]:
-    """Select which models to use based on mode and catalog.
-    Returns list of model dicts from the catalog.
+    """Select enabled models for a run mode from config/models.yaml.
+
+    requested_models, when supplied, are still filtered through the catalog and
+    must be enabled. Without explicit requests, selection is derived from the
+    enabled entries and their role_bias values in the YAML file.
     """
     from fusion_council_service.model_catalog import (
-        FUSION_ACTIVE_TRIO, FUSION_FALLBACK_QUEUE,
-        COUNCIL_ACTIVE_TRIO, COUNCIL_FALLBACK_QUEUE,
-        SINGLE_DEFAULT_MODEL,
+        COUNCIL_ROLE_ORDER,
+        FUSION_ROLE_ORDER,
+        SINGLE_ROLE_ORDER,
     )
 
     if requested_models:
@@ -155,34 +173,9 @@ def select_models_for_mode(mode: str, catalog, requested_models: Optional[list[s
             return models
 
     if mode == "single":
-        m = catalog.get(SINGLE_DEFAULT_MODEL)
-        return [m] if m and m.get("enabled", False) else []
-    elif mode == "fusion":
-        models = []
-        for alias in FUSION_ACTIVE_TRIO:
-            m = catalog.get(alias)
-            if m and m.get("enabled", False):
-                models.append(m)
-        if len(models) < 3:
-            for alias in FUSION_FALLBACK_QUEUE:
-                m = catalog.get(alias)
-                if m and m.get("enabled", False) and m not in models:
-                    models.append(m)
-                    if len(models) >= 3:
-                        break
-        return models[:3]
-    elif mode == "council":
-        models = []
-        for alias in COUNCIL_ACTIVE_TRIO:
-            m = catalog.get(alias)
-            if m and m.get("enabled", False):
-                models.append(m)
-        if len(models) < 3:
-            for alias in COUNCIL_FALLBACK_QUEUE:
-                m = catalog.get(alias)
-                if m and m.get("enabled", False) and m not in models:
-                    models.append(m)
-                    if len(models) >= 3:
-                        break
-        return models[:3]
+        return _models_ordered_by_role(catalog, SINGLE_ROLE_ORDER)[:1]
+    if mode == "fusion":
+        return _models_ordered_by_role(catalog, FUSION_ROLE_ORDER)[:3]
+    if mode == "council":
+        return _models_ordered_by_role(catalog, COUNCIL_ROLE_ORDER)[:3]
     return []

@@ -141,14 +141,14 @@ class Worker:
         Returns the fallback model dict or None.
         """
         mode = run["mode"]
-        from fusion_council_service.model_catalog import FUSION_FALLBACK_QUEUE, COUNCIL_FALLBACK_QUEUE
-        fallback_queue = COUNCIL_FALLBACK_QUEUE if mode == "council" else FUSION_FALLBACK_QUEUE
-        for alias in fallback_queue:
-            m = self._catalog.get(alias)
-            if m and m.get("enabled", False):
-                emit_fallback_promoted(db, run["run_id"], alias, failed_alias)
-                logger.info(f"Fallback promoted: {alias} replacing {failed_alias}", run_id=run["run_id"])
-                return m
+        active_aliases = {m["alias"] for m in select_models_for_mode(mode, self._catalog)}
+        for model in self._catalog.enabled_models():
+            alias = model["alias"]
+            if alias == failed_alias or alias in active_aliases:
+                continue
+            emit_fallback_promoted(db, run["run_id"], alias, failed_alias)
+            logger.info(f"Fallback promoted: {alias} replacing {failed_alias}", run_id=run["run_id"])
+            return model
         return None
 
     async def _call_provider_async(self, request, db: sqlite3.Connection, run_id: str,
