@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
-from fusion_council_service.db import new_session, initialize_schema, close_db, is_postgresql
+from fusion_council_service.db import new_session, initialize_schema, close_db, is_postgresql, execute_sql, commit_tx
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
@@ -128,12 +128,13 @@ class Worker:
         """Finalize a run as succeeded_degraded due to deadline pressure."""
         logger.info(f"Finalizing as succeeded_degraded: {reason}", run_id=run_id)
         now = utc_now_iso()
-        db.execute(
-            "UPDATE runs SET status='succeeded_degraded', finished_at=?, final_answer=?, "
-            "final_confidence=?, degraded_reason=? WHERE run_id=?",
-            (now, best_text, confidence, reason, run_id),
+        execute_sql(
+            db,
+            "UPDATE runs SET status='succeeded_degraded', finished_at=:now, final_answer=:final_answer, "
+            "final_confidence=:confidence, degraded_reason=:reason WHERE run_id=:run_id",
+            {"now": now, "final_answer": best_text, "confidence": confidence, "reason": reason, "run_id": run_id},
         )
-        db.commit()
+        commit_tx(db)
         emit_run_succeeded_degraded(db, run_id, best_text, reason, confidence=confidence)
         update_run_status(db, run_id, "succeeded_degraded", final_answer=best_text,
                           final_confidence=confidence, degraded_reason=reason)
@@ -217,11 +218,12 @@ class Worker:
             emit_candidate_completed(db, run_id, candidate_id, model["alias"], "generation")
 
             # Emit completion
-            db.execute(
-                "UPDATE runs SET status='succeeded', finished_at=?, final_answer=? WHERE run_id=?",
-                (utc_now_iso(), raw_text, run_id),
+            execute_sql(
+                db,
+                "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer WHERE run_id=:run_id",
+                {"now": utc_now_iso(), "final_answer": raw_text, "run_id": run_id},
             )
-            db.commit()
+            commit_tx(db)
             emit_run_completed(db, run_id, raw_text)
             update_run_status(db, run_id, "succeeded")
         else:
@@ -248,11 +250,12 @@ class Worker:
                     update_candidate_result(db, fb_candidate_id, "succeeded", raw_answer=fb_txt,
                                             latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                     emit_candidate_completed(db, run_id, fb_candidate_id, fallback["alias"], "generation")
-                    db.execute(
-                        "UPDATE runs SET status='succeeded', finished_at=?, final_answer=? WHERE run_id=?",
-                        (utc_now_iso(), fb_txt, run_id),
+                    execute_sql(
+                        db,
+                        "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer WHERE run_id=:run_id",
+                        {"now": utc_now_iso(), "final_answer": fb_txt, "run_id": run_id},
                     )
-                    db.commit()
+                    commit_tx(db)
                     emit_run_completed(db, run_id, fb_txt)
                     update_run_status(db, run_id, "succeeded")
                     return
@@ -356,9 +359,9 @@ class Worker:
 
         if len(succeeded) < 2:
             # Quorum not met even after fallbacks
-            db.execute("UPDATE runs SET status='failed', error_code='FUSION_QUORUM_NOT_MET', finished_at=? WHERE run_id=?",
-                       (utc_now_iso(), run_id))
-            db.commit()
+            execute_sql(db, "UPDATE runs SET status='failed', error_code='FUSION_QUORUM_NOT_MET', finished_at=:now WHERE run_id=:run_id",
+                        {"now": utc_now_iso(), "run_id": run_id})
+            commit_tx(db)
             emit_run_failed(db, run_id, "FUSION_QUORUM_NOT_MET", f"Only {len(succeeded)}/3 models succeeded")
             update_run_status(db, run_id, "failed", error_code="FUSION_QUORUM_NOT_MET")
             return
@@ -438,9 +441,9 @@ class Worker:
         else:
             final_answer = synthesis_text  # Fallback if verification fails
 
-        db.execute("UPDATE runs SET status='succeeded', finished_at=?, final_answer=?, final_confidence=? WHERE run_id=?",
-                   (utc_now_iso(), final_answer, confidence, run_id))
-        db.commit()
+        execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
+                    {"now": utc_now_iso(), "final_answer": final_answer, "confidence": confidence, "run_id": run_id})
+        commit_tx(db)
         emit_run_completed(db, run_id, final_answer, confidence=confidence)
         update_run_status(db, run_id, "succeeded", final_answer=final_answer, final_confidence=confidence)
 
@@ -533,9 +536,9 @@ class Worker:
                         break
 
         if len(succeeded_opinions) < 2:
-            db.execute("UPDATE runs SET status='failed', error_code='COUNCIL_QUORUM_NOT_MET', finished_at=? WHERE run_id=?",
-                       (utc_now_iso(), run_id))
-            db.commit()
+            execute_sql(db, "UPDATE runs SET status='failed', error_code='COUNCIL_QUORUM_NOT_MET', finished_at=:now WHERE run_id=:run_id",
+                        {"now": utc_now_iso(), "run_id": run_id})
+            commit_tx(db)
             emit_run_failed(db, run_id, "COUNCIL_QUORUM_NOT_MET", f"Only {len(succeeded_opinions)}/3 opinions succeeded")
             update_run_status(db, run_id, "failed", error_code="COUNCIL_QUORUM_NOT_MET")
             return
@@ -696,16 +699,16 @@ class Worker:
             except Exception:
                 pass
 
-        db.execute("UPDATE runs SET status='succeeded', finished_at=?, final_answer=?, final_confidence=? WHERE run_id=?",
-                   (utc_now_iso(), synthesis_text, confidence, run_id))
-        db.commit()
+        execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
+                    {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})
+        commit_tx(db)
         emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
         update_run_status(db, run_id, "succeeded", final_answer=synthesis_text, final_confidence=confidence)
 
     async def _fail_run(self, db: object, run_id: str, error_code: str, error_message: str) -> None:
-        db.execute("UPDATE runs SET status='failed', error_code=?, error_message=?, finished_at=? WHERE run_id=?",
-                   (error_code, error_message, utc_now_iso(), run_id))
-        db.commit()
+        execute_sql(db, "UPDATE runs SET status='failed', error_code=:error_code, error_message=:error_message, finished_at=:now WHERE run_id=:run_id",
+                    {"error_code": error_code, "error_message": error_message, "now": utc_now_iso(), "run_id": run_id})
+        commit_tx(db)
         emit_run_failed(db, run_id, error_code, error_message)
         update_run_status(db, run_id, "failed", error_code=error_code, error_message=error_message)
 
@@ -779,6 +782,9 @@ class Worker:
         self._recover_stale_runs()
 
         while self._running:
+            # Recover any runs stuck in 'running' status (runs every iteration)
+            self._recover_stale_runs()
+
             # Check for graceful shutdown request (preStop hook touches this file)
             import os as _os
             if _os.path.exists("/tmp/shutdown-requested"):
