@@ -782,9 +782,6 @@ class Worker:
         self._recover_stale_runs()
 
         while self._running:
-            # Recover any runs stuck in 'running' status (runs every iteration)
-            self._recover_stale_runs()
-
             # Check for graceful shutdown request (preStop hook touches this file)
             import os as _os
             if _os.path.exists("/tmp/shutdown-requested"):
@@ -799,6 +796,8 @@ class Worker:
                 if run:
                     self._current_run_task = asyncio.create_task(self._execute_run(run))
                 else:
+                    # When idle, recover stale runs (safe — no active processing)
+                    self._recover_stale_runs()
                     await asyncio.sleep(self._poll_interval_s)
             except sqlite3.OperationalError as e:
                 logger.error(f"SQLite operational error in poll loop: {e}. Resetting connection.")
