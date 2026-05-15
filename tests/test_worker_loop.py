@@ -53,7 +53,7 @@ def mock_worker(tmp_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_recover_stale_runs_called_at_startup(mock_worker, tmp_db, caplog):
-    """_recover_stale_runs() should be called exactly once when run_async() starts."""
+    """_recover_stale_runs() should be called at startup and during idle polling."""
     worker = mock_worker
     with patch.object(worker, "_recover_stale_runs") as mock_recover:
         mock_recover.return_value = None
@@ -74,7 +74,7 @@ def test_recover_stale_runs_called_at_startup(mock_worker, tmp_db, caplog):
                 except asyncio.CancelledError:
                     pass
         asyncio.run(_start_then_stop())
-    mock_recover.assert_called_once()
+    assert mock_recover.call_count >= 1
 
 
 # ---------------------------------------------------------------------------
