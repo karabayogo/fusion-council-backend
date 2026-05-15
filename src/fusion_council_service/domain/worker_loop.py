@@ -778,9 +778,6 @@ class Worker:
         logger.info("Worker loop starting")
         self._running = True
 
-        # Recover any runs stuck in 'running' status before polling
-        self._recover_stale_runs()
-
         while self._running:
             # Check for graceful shutdown request (preStop hook touches this file)
             import os as _os

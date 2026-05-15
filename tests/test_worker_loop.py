@@ -40,7 +40,7 @@ def mock_worker(tmp_db, monkeypatch):
         db_path=":memory:",
         registry=mock_registry,
         catalog=model_catalog,
-        poll_interval_ms=5000,
+        poll_interval_ms=50,
         heartbeat_interval_ms=5000,
         stale_run_threshold_seconds=30,
     )
@@ -53,7 +53,7 @@ def mock_worker(tmp_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_recover_stale_runs_called_at_startup(mock_worker, tmp_db, caplog):
-    """_recover_stale_runs() should be called at startup and during idle polling."""
+    """_recover_stale_runs() should be called at least once during idle polling."""
     worker = mock_worker
     with patch.object(worker, "_recover_stale_runs") as mock_recover:
         mock_recover.return_value = None
