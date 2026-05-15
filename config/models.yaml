@@ -15,14 +15,29 @@ models:
   #   tier: frontier
   #   role_bias: reviewer
 
-  # MiniMax first for testing (rate-limited opencode-go models moved down)
+  - alias: opencode-go/deepseek-v4-pro
+    provider: opencode_go
+    provider_model: deepseek-v4-pro
+    enabled: true
+    family: deepseek
+    tier: frontier
+    role_bias: primary
+
+  - alias: opencode-go/qwen3.6-plus
+    provider: opencode_go
+    provider_model: qwen3.6-plus
+    enabled: true
+    family: qwen
+    tier: frontier
+    role_bias: reviewer
+
   - alias: minimax/MiniMax-M2.7
     provider: minimax_token_plan
     provider_model: MiniMax-M2.7
     enabled: true
     family: minimax
     tier: frontier
-    role_bias: primary
+    role_bias: backup
 
   - alias: minimax/MiniMax-M2.7-synthesis
     provider: minimax_token_plan
@@ -31,22 +46,6 @@ models:
     family: minimax
     tier: frontier
     role_bias: synthesis
-
-  - alias: opencode-go/deepseek-v4-pro
-    provider: opencode_go
-    provider_model: deepseek-v4-pro
-    enabled: true
-    family: deepseek
-    tier: frontier
-    role_bias: reviewer
-
-  - alias: opencode-go/qwen3.6-plus
-    provider: opencode_go
-    provider_model: qwen3.6-plus
-    enabled: true
-    family: qwen
-    tier: frontier
-    role_bias: backup
 
   - alias: opencode-go/deepseek-v4-pro-creative
     provider: opencode_go
