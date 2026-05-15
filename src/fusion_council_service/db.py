@@ -141,8 +141,6 @@ def initialize_schema(db=None) -> None:
     if _own_session and _is_postgresql:
         db.close()
 
-    logger.info("Schema initialized")
-
 
 def commit_tx(db) -> None:
     """Commit transaction."""
