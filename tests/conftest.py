@@ -30,6 +30,7 @@ def tmp_db() -> Generator[sqlite3.Connection, None, None]:
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA foreign_keys=ON")
     initialize_schema(db)
+    db.commit()  # Ensure no implicit transaction left open
     yield db
     db.close()
 

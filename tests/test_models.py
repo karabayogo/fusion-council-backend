@@ -12,12 +12,12 @@ from fusion_council_service.model_catalog import (
 def test_load_yaml_catalog():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
-    assert len(models) == 9
+    assert len(models) == 6
     aliases = [m["alias"] for m in models]
-    assert "openai-codex/gpt-5.3-codex" in aliases
-    assert "openai-codex/gpt-5.4" in aliases
-    assert "minimax/MiniMax-M2.7-primary" in aliases
+    assert "opencode-go/deepseek-v4-pro" in aliases
+    assert "opencode-go/qwen3.6-plus" in aliases
     assert "minimax/MiniMax-M2.7" in aliases
+    assert "minimax/MiniMax-M2.7-synthesis" in aliases
 
 
 def test_duplicate_alias_raises():
@@ -42,7 +42,7 @@ def test_model_catalog_get():
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
 
-    assert catalog.get("openai-codex/gpt-5.3-codex")["provider"] == "openai_codex"
+    assert catalog.get("opencode-go/deepseek-v4-pro")["provider"] == "opencode_go"
     assert catalog.get("nonexistent") is None
 
 
@@ -51,9 +51,8 @@ def test_model_catalog_is_enabled():
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
 
-    assert catalog.is_model_enabled("openai-codex/gpt-5.3-codex") is False
-    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is False
-    assert catalog.is_model_enabled("minimax/MiniMax-M2.7-primary") is True
+    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is True
+    assert catalog.is_model_enabled("minimax/MiniMax-M2.7-synthesis") is True
     assert catalog.is_model_enabled("nonexistent") is False
 
 
@@ -61,7 +60,7 @@ def test_model_catalog_len():
     path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
     models = load_yaml_catalog(path)
     catalog = ModelCatalog(models)
-    assert len(catalog) == 9
+    assert len(catalog) == 6
 
 
 def test_mode_selection_is_config_driven_by_enabled_roles():
