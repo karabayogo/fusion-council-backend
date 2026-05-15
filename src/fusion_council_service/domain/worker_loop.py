@@ -10,7 +10,7 @@ from typing import Optional
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import new_session, initialize_schema, execute_sql, commit_tx
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
-from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
+from fusion_council_service.domain.candidate_repository import get_candidate, insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
@@ -310,10 +310,7 @@ class Worker:
                 update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "generation")
-                gen_candidates.append(get_run(db, run_id) or {})  # refresh
-                # Reload candidate from DB
-                cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                gen_candidates[-1] = dict(cursor.fetchone())
+                gen_candidates.append(get_candidate(db, cand_id) or {})
             else:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "generation", "failed", utc_now_iso())
@@ -352,8 +349,7 @@ class Worker:
                         update_candidate_result(db, cand_id, "succeeded", raw_answer=fb_text,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "generation")
-                        cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                        succeeded.append(dict(cursor.fetchone()))
+                        succeeded.append(get_candidate(db, cand_id) or {})
                     if len(succeeded) >= 2:
                         break
 
@@ -490,8 +486,7 @@ class Worker:
                 update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, m["alias"], "first_opinion")
-                cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                first_opinions.append(dict(cursor.fetchone()))
+                first_opinions.append(get_candidate(db, cand_id) or {})
             else:
                 insert_candidate(db, run_id, cand_id, m["alias"], m["provider"],
                                  m["provider_model"], "first_opinion", "failed", utc_now_iso())
@@ -530,8 +525,7 @@ class Worker:
                         update_candidate_result(db, cand_id, "succeeded", raw_answer=fb_txt,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "first_opinion")
-                        cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                        succeeded_opinions.append(dict(cursor.fetchone()))
+                        succeeded_opinions.append(get_candidate(db, cand_id) or {})
                     if len(succeeded_opinions) >= 2:
                         break
 
@@ -602,8 +596,7 @@ class Worker:
                 update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "peer_review")
-                cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                peer_reviews.append(dict(cursor.fetchone()))
+                peer_reviews.append(get_candidate(db, cand_id) or {})
             else:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "peer_review", "failed", utc_now_iso())
@@ -637,8 +630,7 @@ class Worker:
                 update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, debate_model["alias"], "debate")
-                cursor = db.execute("SELECT * FROM run_candidates WHERE candidate_id=?", (cand_id,))
-                debate_cands.append(dict(cursor.fetchone()))
+                debate_cands.append(get_candidate(db, cand_id) or {})
             else:
                 insert_candidate(db, run_id, cand_id, debate_model["alias"], debate_model["provider"],
                                  debate_model["provider_model"], "debate", "failed", utc_now_iso())
