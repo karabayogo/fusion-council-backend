@@ -15,7 +15,7 @@ from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
-from fusion_council_service.domain.run_repository import claim_next_run, get_run, reset_stale_running_runs, update_run_status
+from fusion_council_service.domain.run_repository import claim_next_run, reset_stale_running_runs, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
     build_peer_review_prompt, build_verification_prompt, compute_pairwise_agreement,
