@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
         MINIMAX_ANTHROPIC_BASE_URL=os.environ.get("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"),
         OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", "https://ollama.com"),
         OPENAI_CODEX_BASE_URL=os.environ.get("OPENAI_CODEX_BASE_URL", "https://api.openai.com/v1"),
-        OPENCODE_GO_BASE_URL=os.environ.get("OPENCODE_GO_BASE_URL", "https://api.opencode.go/v1"),
+        OPENCODE_GO_BASE_URL=os.environ.get("OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
         APP_ENV=os.environ.get("APP_ENV", "development"),
         HOST=os.environ.get("HOST", "0.0.0.0"),
         PORT=int(os.environ.get("PORT", "8080")),

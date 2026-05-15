@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     OPENAI_CODEX_API_KEY: str = ""
     OPENAI_CODEX_BASE_URL: str = "https://api.openai.com/v1"
     OPENCODE_GO_API_KEY: str = ""
-    OPENCODE_GO_BASE_URL: str = "https://api.opencode.go/v1"
+    OPENCODE_GO_BASE_URL: str = "https://opencode.ai/zen/go/v1"
 
     WORKER_POLL_INTERVAL_MS: int = 1000
     WORKER_HEARTBEAT_INTERVAL_MS: int = 5000
