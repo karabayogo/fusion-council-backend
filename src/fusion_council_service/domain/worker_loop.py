@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
-from fusion_council_service.db import new_session, initialize_schema, close_db, is_postgresql, execute_sql, commit_tx
+from fusion_council_service.db import new_session, initialize_schema, execute_sql, commit_tx
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (

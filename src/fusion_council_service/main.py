@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fusion_council_service.api.routes import init_api, router
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.config import Settings
-from fusion_council_service.db import initialize_schema, new_session, is_postgresql
+from fusion_council_service.db import initialize_schema, new_session
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
 from fusion_council_service.providers.registry import build_provider_registry

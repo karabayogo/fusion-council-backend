@@ -12,9 +12,8 @@ Usage:
 
 import os
 import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Optional, Union
+from typing import Optional, Union
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker

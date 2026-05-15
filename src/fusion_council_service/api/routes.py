@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fusion_council_service.auth import extract_bearer, resolve_role
 from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
 from fusion_council_service.config import Settings
-from fusion_council_service.db import new_session, initialize_schema, is_postgresql
+from fusion_council_service.db import new_session, initialize_schema
 from fusion_council_service.domain.budget import resolve_deadline, select_models_for_mode
 from fusion_council_service.domain.event_emitter import emit_run_accepted
 from fusion_council_service.domain.event_repository import list_events_for_run
