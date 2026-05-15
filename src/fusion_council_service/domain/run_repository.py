@@ -162,7 +162,11 @@ def claim_next_run(db) -> Optional[dict]:
             rollback_tx(db)
             raise
     else:
-        # SQLite: use BEGIN IMMEDIATE for atomic claim
+        # SQLite: use BEGIN IMMEDIATE for atomic claim.
+        # Commit any pending deferred transaction first (SQLite auto-starts
+        # one on the first DML/SELECT when isolation_level != None).
+        # Rolling back would lose uncommitted data, so we commit instead.
+        db.commit()
         db.execute("BEGIN IMMEDIATE")
         try:
             cursor = db.execute(

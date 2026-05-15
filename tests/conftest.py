@@ -27,10 +27,11 @@ def tmp_db() -> Generator[sqlite3.Connection, None, None]:
 
     db = sqlite3.connect(":memory:", timeout=5)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
+    # WAL mode requires a file on disk — skip for in-memory
     db.execute("PRAGMA foreign_keys=ON")
     initialize_schema(db)
-    db.commit()  # Ensure no implicit transaction left open
+    # Ensure clean autocommit state (no implicit transaction)
+    db.commit()
     yield db
     db.close()
 
