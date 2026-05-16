@@ -492,6 +492,7 @@ class Worker:
                                  m["provider_model"], "first_opinion", "failed", utc_now_iso())
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
                 emit_candidate_failed(db, run_id, cand_id, m["alias"], "first_opinion", err_msg or err_code)
+                first_opinions.append(get_candidate(db, cand_id) or {})
 
         succeeded_opinions = [c for c in first_opinions if c.get("status") == "succeeded"]
 

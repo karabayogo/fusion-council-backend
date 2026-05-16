@@ -150,6 +150,37 @@ def _models_ordered_by_role(catalog, role_order: list[str]) -> list[dict]:
     )
 
 
+def _take_provider_diverse(models: list[dict], limit: int) -> list[dict]:
+    """Pick up to limit models while avoiding duplicate provider/model pairs first.
+
+    Council/fusion quorum should not depend on two aliases backed by the same
+    upstream model when provider-specific latency or outage hits. Preserve role
+    ordering, but prefer distinct (provider, provider_model) pairs before
+    filling remaining slots with duplicates.
+    """
+    selected: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for model in models:
+        pair = (model.get("provider", ""), model.get("provider_model", ""))
+        if pair in seen_pairs:
+            continue
+        selected.append(model)
+        seen_pairs.add(pair)
+        if len(selected) >= limit:
+            return selected
+
+    selected_ids = {id(model) for model in selected}
+    for model in models:
+        if id(model) in selected_ids:
+            continue
+        selected.append(model)
+        if len(selected) >= limit:
+            return selected
+
+    return selected
+
+
 def select_models_for_mode(mode: str, catalog, requested_models: Optional[list[str]] = None) -> list[dict]:
     """Select enabled models for a run mode from config/models.yaml.
 
@@ -175,7 +206,7 @@ def select_models_for_mode(mode: str, catalog, requested_models: Optional[list[s
     if mode == "single":
         return _models_ordered_by_role(catalog, SINGLE_ROLE_ORDER)[:1]
     if mode == "fusion":
-        return _models_ordered_by_role(catalog, FUSION_ROLE_ORDER)[:3]
+        return _take_provider_diverse(_models_ordered_by_role(catalog, FUSION_ROLE_ORDER), 3)
     if mode == "council":
-        return _models_ordered_by_role(catalog, COUNCIL_ROLE_ORDER)[:3]
+        return _take_provider_diverse(_models_ordered_by_role(catalog, COUNCIL_ROLE_ORDER), 3)
     return []
