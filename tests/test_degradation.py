@@ -182,11 +182,11 @@ class TestSucceededDegraded:
         assert applied == 1
 
         d, applied = resolve_deadline("fusion", None)
-        assert d == 120
+        assert d == 900
         assert applied == 1
 
         d, applied = resolve_deadline("council", None)
-        assert d == 120
+        assert d == 1800
         assert applied == 1
 
     def test_resolve_deadline_ceiling(self):
@@ -195,6 +195,6 @@ class TestSucceededDegraded:
         assert d == 300
         assert applied == 2
 
-        d, applied = resolve_deadline("fusion", 500)
-        assert d == 300
+        d, applied = resolve_deadline("fusion", 1000)
+        assert d == 900
         assert applied == 2

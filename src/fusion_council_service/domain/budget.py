@@ -37,20 +37,20 @@ EXTENDED_COUNCIL_BUDGET_TABLE = {
 }
 
 # Deadline ceilings
-FUSION_TOTAL_CEILING_SECONDS = 300
-COUNCIL_TOTAL_CEILING_SECONDS = 1200
-EXTENDED_COUNCIL_CEILING_SECONDS = 1800
+FUSION_TOTAL_CEILING_SECONDS = 900
+COUNCIL_TOTAL_CEILING_SECONDS = 1800
+EXTENDED_COUNCIL_CEILING_SECONDS = 3600
 
 # Mode defaults
 MODE_DEFAULT_DEADLINE = {
     "single": 60,
-    "fusion": 120,
-    "council": 120,
+    "fusion": 900,
+    "council": 1800,
 }
 
 MODE_MAX_DEADLINE = {
     "single": 300,
-    "fusion": 300,
+    "fusion": 900,
     "council": 1800,
 }
 
