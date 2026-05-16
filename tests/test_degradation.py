@@ -100,6 +100,139 @@ class TestAnswersEndpoint:
         assert data["count"] == 2
         assert data["candidates"][0]["alias"] == "minimax-portal/MiniMax-M2.7"
 
+    def test_answers_contract_v1_includes_stages_raw_text_and_execution_order(self, db, settings):
+        """Answers endpoint is the durable v1 candidate-detail contract.
+
+        Candidate rows represent real provider attempts only. Skipped/degraded
+        orchestration state belongs in stages[], not fake run_candidates rows.
+        """
+        from fusion_council_service.api.routes import init_api, get_auth_dependency
+        from fusion_council_service.domain.event_emitter import emit_stage_started
+
+        init_api(settings)
+        import fusion_council_service.api.routes as routes_mod
+        routes_mod._api_db = db
+
+        run_id = new_run_id()
+        insert_run(
+            db=db, run_id=run_id, mode="council",
+            prompt="test", system_prompt=None,
+            temperature=0.2, max_output_tokens=100,
+            deadline_seconds=1800, deadline_at="2026-01-01T00:30:00Z",
+            owner_token_hash="abc123", metadata_json="{}",
+            requested_models_json=None, created_at="2026-01-01T00:00:00Z",
+        )
+        update_run_status(
+            db, run_id, "succeeded_degraded",
+            degraded_reason="council_skip_debate",
+            models_planned=3,
+            models_completed=2,
+            models_failed=1,
+        )
+        emit_stage_started(db, run_id, "first_opinion", ["model-a", "model-b"])
+        emit_stage_started(db, run_id, "peer_review", ["model-c"])
+
+        cand1 = new_candidate_id()
+        insert_candidate(db, run_id, cand1, "model-a", "opencode-go",
+                         "deepseek", "first_opinion", "succeeded", "2026-01-01T00:00:01Z")
+        update_candidate_result(db, cand1, "succeeded", raw_answer="first real answer")
+
+        cand2 = new_candidate_id()
+        insert_candidate(db, run_id, cand2, "model-b", "opencode-go",
+                         "qwen", "first_opinion", "succeeded", "2026-01-01T00:00:02Z")
+        update_candidate_result(db, cand2, "succeeded", raw_answer="second real answer")
+
+        from fastapi.testclient import TestClient
+        from fusion_council_service.main import app
+
+        app.dependency_overrides[get_auth_dependency] = lambda: ("test-key", "user")
+        client = TestClient(app)
+        response = client.get(
+            f"/v1/runs/{run_id}/answers",
+            headers={"Authorization": "Bearer test-key"},
+        )
+        app.dependency_overrides.clear()
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["schema_version"] == "v1"
+        assert data["run_id"] == run_id
+        assert data["count"] == 2
+        assert "stages" in data
+        assert [stage["stage"] for stage in data["stages"]] == ["first_opinion", "peer_review", "debate"]
+        assert data["stages"][0]["candidate_count"] == 2
+        assert data["stages"][1]["candidate_count"] == 0
+        assert data["stages"][2]["status"] == "skipped"
+        assert data["stages"][2]["degraded_reason"] == "council_skip_debate"
+
+        candidates = data["candidates"]
+        assert [c["raw_text"] for c in candidates] == ["first real answer", "second real answer"]
+        assert [c["raw_answer"] for c in candidates] == ["first real answer", "second real answer"]
+        assert [c["execution_order"] for c in candidates] == [1, 2]
+        assert all(c["candidate_id"] for c in candidates)
+        assert all(c["stage"] == "first_opinion" for c in candidates)
+
+    def test_schema_migration_adds_execution_order_column(self, db):
+        """Fresh DBs must include persisted candidate execution_order."""
+        columns = [row[1] for row in db.execute("PRAGMA table_info(run_candidates)").fetchall()]
+        assert "execution_order" in columns
+
+    def test_schema_migration_upgrades_legacy_candidates_and_backfills_order(self):
+        """Existing DBs without execution_order must start and backfill deterministically."""
+        from fusion_council_service.db import apply_schema_migrations, initialize_schema
+
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE run_candidates (
+              candidate_id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              alias TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              provider_model TEXT NOT NULL,
+              stage TEXT NOT NULL,
+              status TEXT NOT NULL,
+              latency_ms INTEGER,
+              input_tokens INTEGER,
+              output_tokens INTEGER,
+              raw_answer TEXT,
+              normalized_answer TEXT,
+              score_json TEXT,
+              error_code TEXT,
+              error_message TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            INSERT INTO run_candidates
+              (candidate_id, run_id, alias, provider, provider_model, stage, status, created_at, updated_at)
+            VALUES
+              ('cand_synth', 'run_legacy', 'synth', 'opencode-go', 'synth', 'synthesis', 'succeeded', '2026-01-01T00:00:01Z', '2026-01-01T00:00:01Z'),
+              ('cand_first', 'run_legacy', 'first', 'opencode-go', 'first', 'first_opinion', 'succeeded', '2026-01-01T00:00:02Z', '2026-01-01T00:00:02Z');
+            """
+        )
+
+        initialize_schema(conn)
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(run_candidates)").fetchall()]
+        assert "execution_order" in columns
+        rows = conn.execute(
+            "SELECT candidate_id, execution_order FROM run_candidates ORDER BY execution_order"
+        ).fetchall()
+        assert [(row["candidate_id"], row["execution_order"]) for row in rows] == [
+            ("cand_first", 1),
+            ("cand_synth", 2),
+        ]
+
+        apply_schema_migrations(conn)
+        rows_after_second_run = conn.execute(
+            "SELECT candidate_id, execution_order FROM run_candidates ORDER BY execution_order"
+        ).fetchall()
+        assert [(row["candidate_id"], row["execution_order"]) for row in rows_after_second_run] == [
+            ("cand_first", 1),
+            ("cand_synth", 2),
+        ]
+        conn.close()
+
     def test_answers_404_for_missing_run(self, db, settings):
         """Answers endpoint should return 404 for non-existent run."""
         from fusion_council_service.api.routes import init_api, get_auth_dependency

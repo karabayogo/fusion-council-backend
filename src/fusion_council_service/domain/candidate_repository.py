@@ -11,6 +11,15 @@ from fusion_council_service.db import (
 )
 
 
+def _next_execution_order(db, run_id: str) -> int:
+    row = execute_sql_one(
+        db,
+        "SELECT COALESCE(MAX(execution_order), 0) + 1 AS next_order FROM run_candidates WHERE run_id = :run_id",
+        {"run_id": run_id},
+    )
+    return int(row["next_order"] if row and row["next_order"] is not None else 1)
+
+
 def insert_candidate(
     db,
     run_id: str,
@@ -21,13 +30,16 @@ def insert_candidate(
     stage: str,
     status: str,
     created_at: str,
+    execution_order: Optional[int] = None,
 ) -> Optional[dict]:
+    if execution_order is None:
+        execution_order = _next_execution_order(db, run_id)
     execute_sql(
         db,
         """
         INSERT INTO run_candidates
-            (candidate_id, run_id, alias, provider, provider_model, stage, status, created_at, updated_at)
-        VALUES (:candidate_id, :run_id, :alias, :provider, :provider_model, :stage, :status, :created_at, :updated_at)
+            (candidate_id, run_id, alias, provider, provider_model, stage, status, execution_order, created_at, updated_at)
+        VALUES (:candidate_id, :run_id, :alias, :provider, :provider_model, :stage, :status, :execution_order, :created_at, :updated_at)
         """,
         {
             "candidate_id": candidate_id,
@@ -37,6 +49,7 @@ def insert_candidate(
             "provider_model": provider_model,
             "stage": stage,
             "status": status,
+            "execution_order": execution_order,
             "created_at": created_at,
             "updated_at": created_at,
         },
@@ -96,6 +109,22 @@ def update_candidate_result(
 def list_candidates_for_run(db, run_id: str) -> list[dict]:
     return execute_sql_all(
         db,
-        "SELECT * FROM run_candidates WHERE run_id = :run_id ORDER BY created_at",
+        """
+        SELECT * FROM run_candidates
+        WHERE run_id = :run_id
+        ORDER BY
+          COALESCE(execution_order, 999999),
+          CASE stage
+            WHEN 'generation' THEN 10
+            WHEN 'first_opinion' THEN 20
+            WHEN 'peer_review' THEN 30
+            WHEN 'debate' THEN 40
+            WHEN 'synthesis' THEN 50
+            WHEN 'verification' THEN 60
+            ELSE 999
+          END,
+          created_at,
+          candidate_id
+        """,
         {"run_id": run_id},
     )

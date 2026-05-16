@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS run_candidates (
   provider_model TEXT NOT NULL,
   stage TEXT NOT NULL,
   status TEXT NOT NULL,
+  execution_order INTEGER,
   latency_ms INTEGER,
   input_tokens INTEGER,
   output_tokens INTEGER,
@@ -65,6 +66,11 @@ CREATE TABLE IF NOT EXISTS run_candidates (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS worker_state (

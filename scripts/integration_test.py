@@ -12,7 +12,6 @@ Exit codes:
   2 — error (setup/infrastructure)
 """
 
-import json
 import subprocess
 import sys
 import time

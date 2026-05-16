@@ -605,6 +605,7 @@ class Worker:
 
         # Stage 3: debate (conditionally)
         # Deadline check — skip debate if under deadline pressure
+        debate_cands = []
         degradation = self._check_deadline(run)
         if degradation and "skip_debate" in (degradation or ""):
             debate_triggered = False

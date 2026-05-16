@@ -74,6 +74,107 @@ def get_auth_dependency():
     return dependency
 
 
+_STAGE_ORDER = {
+    "generation": 10,
+    "first_opinion": 20,
+    "peer_review": 30,
+    "debate": 40,
+    "synthesis": 50,
+    "verification": 60,
+}
+
+_DEGRADED_SKIPPED_STAGES = {
+    "council_skip_debate": ["debate"],
+    "council_skip_peer_review": ["peer_review", "debate"],
+    "council_deadline_imminent_return_best_opinion": ["peer_review", "debate", "synthesis", "verification"],
+    "fusion_approaching_deadline_skip_verification": ["verification"],
+    "fusion_deadline_imminent_return_best_candidate": ["verification"],
+}
+
+
+def _candidate_contract(candidate: dict, fallback_order: int) -> dict:
+    """Map a persisted candidate row to the stable answers v1 contract."""
+    row = dict(candidate)
+    execution_order = row.get("execution_order") or fallback_order
+    row["execution_order"] = execution_order
+    row["raw_text"] = row.get("raw_answer")
+    return row
+
+
+def _parse_event_payload(event: dict) -> dict:
+    try:
+        return json.loads(event.get("payload_json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> list[dict]:
+    """Build orchestration-stage summaries without creating fake candidate rows."""
+    by_stage: dict[str, dict] = {}
+
+    for event in events:
+        payload = _parse_event_payload(event)
+        stage = payload.get("stage")
+        if not stage:
+            continue
+        summary = by_stage.setdefault(stage, {
+            "stage": stage,
+            "status": "started",
+            "candidate_count": 0,
+            "models": [],
+            "started_at": event.get("created_at"),
+        })
+        if event.get("event_type") == "stage.started":
+            summary["status"] = "started"
+            summary["started_at"] = summary.get("started_at") or event.get("created_at")
+            summary["models"] = payload.get("models") or summary.get("models") or []
+
+    for candidate in candidates:
+        stage = candidate.get("stage")
+        if not stage:
+            continue
+        summary = by_stage.setdefault(stage, {
+            "stage": stage,
+            "status": "completed",
+            "candidate_count": 0,
+            "models": [],
+            "started_at": candidate.get("created_at"),
+        })
+        summary["candidate_count"] = int(summary.get("candidate_count") or 0) + 1
+        if candidate.get("status") == "failed" and summary.get("status") != "completed":
+            summary["status"] = "failed"
+        else:
+            summary["status"] = "completed"
+
+    current_stage = run.get("current_stage")
+    degraded_reason = run.get("degraded_reason")
+    if current_stage:
+        summary = by_stage.setdefault(current_stage, {
+            "stage": current_stage,
+            "candidate_count": 0,
+            "models": [],
+            "started_at": None,
+        })
+        if degraded_reason and summary.get("candidate_count", 0) == 0:
+            summary["status"] = "skipped"
+            summary["degraded_reason"] = degraded_reason
+        else:
+            summary.setdefault("status", "current")
+
+    for skipped_stage in _DEGRADED_SKIPPED_STAGES.get(degraded_reason, []):
+        summary = by_stage.setdefault(skipped_stage, {
+            "stage": skipped_stage,
+            "candidate_count": 0,
+            "models": [],
+            "started_at": None,
+        })
+        if summary.get("candidate_count", 0) == 0:
+            summary["status"] = "skipped"
+            summary["degraded_reason"] = degraded_reason
+
+    return sorted(by_stage.values(), key=lambda s: (_STAGE_ORDER.get(s["stage"], 999), s["stage"]))
+
+
 router = APIRouter()
 
 
@@ -156,11 +257,17 @@ async def get_run_answers(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
-    candidates = list_candidates_for_run(db, run_id)
+    candidates = [
+        _candidate_contract(candidate, idx)
+        for idx, candidate in enumerate(list_candidates_for_run(db, run_id), start=1)
+    ]
+    events = list_events_for_run(db, run_id)
     return {
+        "schema_version": "v1",
         "run_id": run_id,
         "mode": run["mode"],
         "status": run["status"],
+        "stages": _stage_summaries(run, candidates, events),
         "candidates": candidates,
         "count": len(candidates),
     }

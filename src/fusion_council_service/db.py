@@ -11,7 +11,9 @@ Usage:
 """
 
 import os
+import re
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -102,7 +104,7 @@ def new_session() -> Union[Session, sqlite3.Connection]:
 
 
 def initialize_schema(db=None) -> None:
-    """Read and execute schema.sql to create tables if they do not exist."""
+    """Read schema.sql, create tables, and apply versioned migrations."""
     if db is None:
         db = new_session()
         _own_session = True
@@ -138,21 +140,136 @@ def initialize_schema(db=None) -> None:
     else:
         db.executescript(sql)
 
+    apply_schema_migrations(db)
+
     if _own_session and _is_postgresql:
         db.close()
 
 
+def _table_columns(db, table_name: str) -> set[str]:
+    """Return column names for a table in the active dialect."""
+    if _is_postgresql:
+        result = db.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        )
+        return {row[0] for row in result.fetchall()}
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+        raise ValueError(f"Invalid table name: {table_name!r}")
+    result = db.execute("PRAGMA table_info(" + table_name + ")")
+    return {row[1] for row in result.fetchall()}
+
+
+def _migration_applied(db, version: str) -> bool:
+    execute_sql(
+        db,
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          version TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        )
+        """,
+    )
+    commit_tx(db)
+    row = execute_sql_one(
+        db,
+        "SELECT version FROM schema_migrations WHERE version = :version",
+        {"version": version},
+    )
+    return row is not None
+
+
+def _mark_migration_applied(db, version: str) -> None:
+    sql = "INSERT INTO schema_migrations (version, applied_at) VALUES (:version, :applied_at)"
+    if _is_postgresql:
+        sql += " ON CONFLICT (version) DO NOTHING"
+    execute_sql(
+        db,
+        sql,
+        {"version": version, "applied_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")},
+    )
+    commit_tx(db)
+
+
+def _backfill_candidate_execution_order(db) -> None:
+    """Backfill deterministic per-run execution_order for historical candidates."""
+    stage_order = {
+        "generation": 10,
+        "first_opinion": 20,
+        "peer_review": 30,
+        "debate": 40,
+        "synthesis": 50,
+        "verification": 60,
+    }
+    rows = execute_sql_all(
+        db,
+        """
+        SELECT candidate_id, run_id, stage, created_at
+        FROM run_candidates
+        WHERE execution_order IS NULL
+        ORDER BY run_id, created_at, candidate_id
+        """,
+    )
+    by_run: dict[str, list[dict]] = {}
+    for row in rows:
+        by_run.setdefault(row["run_id"], []).append(row)
+    for run_rows in by_run.values():
+        run_rows.sort(key=lambda r: (stage_order.get(r.get("stage"), 999), r.get("created_at") or "", r.get("candidate_id") or ""))
+        for idx, row in enumerate(run_rows, start=1):
+            execute_sql(
+                db,
+                "UPDATE run_candidates SET execution_order = :execution_order WHERE candidate_id = :candidate_id",
+                {"execution_order": idx, "candidate_id": row["candidate_id"]},
+            )
+    commit_tx(db)
+
+
+def _migration_20260516_candidate_execution_order(db) -> None:
+    columns = _table_columns(db, "run_candidates")
+    if "execution_order" not in columns:
+        execute_sql(db, "ALTER TABLE run_candidates ADD COLUMN execution_order INTEGER")
+        commit_tx(db)
+    _backfill_candidate_execution_order(db)
+    execute_sql(
+        db,
+        "CREATE INDEX IF NOT EXISTS idx_run_candidates_run_order ON run_candidates(run_id, execution_order, created_at, candidate_id)",
+    )
+    commit_tx(db)
+
+
+def apply_schema_migrations(db) -> None:
+    """Apply idempotent versioned schema migrations after base schema creation."""
+    migrations = [
+        ("20260516_0001_candidate_execution_order", _migration_20260516_candidate_execution_order),
+    ]
+    if _is_postgresql:
+        execute_sql(db, "SELECT pg_advisory_lock(hashtext(:lock_name))", {"lock_name": "fusion_council_schema_migrations"})
+    try:
+        for version, migration in migrations:
+            if _migration_applied(db, version):
+                continue
+            migration(db)
+            _mark_migration_applied(db, version)
+    finally:
+        if _is_postgresql:
+            execute_sql(db, "SELECT pg_advisory_unlock(hashtext(:lock_name))", {"lock_name": "fusion_council_schema_migrations"})
+            commit_tx(db)
+
+
 def commit_tx(db) -> None:
     """Commit transaction."""
-    if _is_postgresql:
-        db.commit()
-    # SQLite: auto-commits by default with executescript
+    db.commit()
 
 
 def rollback_tx(db) -> None:
     """Rollback transaction."""
-    if _is_postgresql:
-        db.rollback()
+    db.rollback()
 
 
 def close_db(db) -> None:
