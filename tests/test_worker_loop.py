@@ -151,6 +151,45 @@ def test_shutdown_sentinel_stops_worker(mock_worker):
         pass
 
 
+def test_worker_does_not_recover_stale_runs_while_run_active(mock_worker, tmp_db):
+    """Active long runs must not be re-queued by the same poll loop."""
+    worker = mock_worker
+    _insert_queued_run(tmp_db, "run_no_self_recover")
+
+    async def slow_execute(run):
+        await asyncio.sleep(0.15)
+        worker.stop()
+
+    with patch.object(worker, "_execute_run", side_effect=slow_execute), \
+         patch.object(worker, "_recover_stale_runs") as mock_recover:
+        async def _run():
+            await asyncio.wait_for(worker.run_async(), timeout=2)
+
+        asyncio.run(_run())
+
+    mock_recover.assert_not_called()
+
+
+def test_provider_generate_result_supports_tuple_unpacking():
+    """Worker code can unpack ProviderGenerateResult returned by providers."""
+    from fusion_council_service.domain.types import ProviderGenerateResult
+
+    result = ProviderGenerateResult(
+        success=True,
+        raw_text="ok",
+        error_code=None,
+        error_message=None,
+        latency_ms=123,
+        input_tokens=4,
+        output_tokens=5,
+    )
+
+    success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = result
+    assert (success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok) == (
+        True, "ok", None, None, 123, 4, 5,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 4 — run-active sentinel created and removed
 # ---------------------------------------------------------------------------

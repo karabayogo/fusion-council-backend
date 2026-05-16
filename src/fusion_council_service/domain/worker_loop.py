@@ -725,6 +725,8 @@ class Worker:
         update_run_status(db, run_id, "running", started_at=utc_now_iso(), last_heartbeat_at=utc_now_iso())
         emit_run_started(db, run_id, mode)
 
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop(run_id, mode))
+
         try:
             if mode == "single":
                 await self._run_single(db, run)
@@ -747,6 +749,11 @@ class Worker:
             logger.error(f"Worker exception in run {run_id}: {e}", run_id=run_id)
             await self._fail_run(db, run_id, "WORKER_EXCEPTION", str(e))
         finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
             try:
                 _os.remove(run_active_sentinel)
             except FileNotFoundError:
@@ -784,6 +791,7 @@ class Worker:
                 run = claim_next_run(db)
                 if run:
                     self._current_run_task = asyncio.create_task(self._execute_run(run))
+                    await self._current_run_task
                 else:
                     # When idle, recover stale runs (safe — no active processing)
                     self._recover_stale_runs()
