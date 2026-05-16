@@ -149,3 +149,18 @@ def test_requested_models_are_filtered_through_catalog_enabled_flags():
         m["alias"]
         for m in select_models_for_mode("fusion", catalog, requested_models=["disabled", "missing", "enabled"])
     ] == ["enabled"]
+
+
+def test_council_selection_prefers_distinct_provider_models_for_quorum():
+    catalog = ModelCatalog([
+        {"alias": "primary-a", "provider": "p1", "provider_model": "m1", "enabled": True, "role_bias": "primary"},
+        {"alias": "reviewer-b", "provider": "p1", "provider_model": "m2", "enabled": True, "role_bias": "reviewer"},
+        {"alias": "creative-dup-a", "provider": "p1", "provider_model": "m1", "enabled": True, "role_bias": "creative"},
+        {"alias": "synthesis-c", "provider": "p2", "provider_model": "m3", "enabled": True, "role_bias": "synthesis"},
+    ])
+
+    assert [m["alias"] for m in select_models_for_mode("council", catalog)] == [
+        "primary-a",
+        "reviewer-b",
+        "synthesis-c",
+    ]
