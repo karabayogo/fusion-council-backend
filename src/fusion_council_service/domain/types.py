@@ -31,6 +31,22 @@ class ProviderGenerateResult:
     input_tokens: Optional[int]
     output_tokens: Optional[int]
 
+    def __iter__(self):
+        """Preserve tuple-unpacking compatibility in worker orchestration.
+
+        The worker historically unpacked provider results as
+        ``success, text, ... = result``. Provider clients now return this
+        dataclass consistently, so exposing the normalized tuple shape keeps
+        all orchestration paths compatible without duplicating adapter code.
+        """
+        yield self.success
+        yield self.raw_text
+        yield self.error_code
+        yield self.error_message
+        yield self.latency_ms
+        yield self.input_tokens
+        yield self.output_tokens
+
 
 # --- API request/response models ---
 
