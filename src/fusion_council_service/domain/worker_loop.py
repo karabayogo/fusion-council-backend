@@ -155,7 +155,7 @@ class Worker:
         return None
 
     async def _call_provider_async(self, request, db: object, run_id: str,
-                                    timeout_seconds: int = 120):
+                                    timeout_seconds: int = 300):
         """Call provider in thread pool and return result.
 
         Wraps the blocking call with a timeout. If the provider call exceeds
