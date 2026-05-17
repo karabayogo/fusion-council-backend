@@ -14,6 +14,7 @@ _terminal_without_candidates_total = 0
 _answers_candidate_count_observations: list[float] = []
 _stage_duration_observations: dict[str, list[float]] = defaultdict(list)
 _observed_terminal_run_ids: set[str] = set()
+_observed_answers_payload_run_ids: set[str] = set()
 
 
 def reset_metrics() -> None:
@@ -25,6 +26,7 @@ def reset_metrics() -> None:
         _answers_candidate_count_observations.clear()
         _stage_duration_observations.clear()
         _observed_terminal_run_ids.clear()
+        _observed_answers_payload_run_ids.clear()
 
 
 def increment_candidate_status(status: str) -> None:
@@ -57,6 +59,21 @@ def observe_terminal_council_run(run_id: str, candidate_count: int) -> None:
 def observe_stage_duration(stage: str, seconds: float) -> None:
     with _lock:
         _stage_duration_observations[stage].append(float(seconds))
+
+
+def observe_answers_payload_once(run_id: str, candidates: list[dict]) -> None:
+    """Observe candidate-level metrics once per run from persisted answers payload."""
+    with _lock:
+        if run_id in _observed_answers_payload_run_ids:
+            return
+        _observed_answers_payload_run_ids.add(run_id)
+
+    observe_council_answers_candidate_count(len(candidates))
+    for candidate in candidates:
+        increment_candidate_status(candidate.get("status") or "unknown")
+        latency_ms = candidate.get("latency_ms")
+        if latency_ms is not None:
+            observe_stage_duration(candidate.get("stage") or "unknown", float(latency_ms) / 1000.0)
 
 
 def _fmt(value: float | int) -> str:
