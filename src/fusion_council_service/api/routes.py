@@ -98,6 +98,17 @@ def _candidate_contract(candidate: dict, fallback_order: int) -> dict:
     row = dict(candidate)
     execution_order = row.get("execution_order") or fallback_order
     row["execution_order"] = execution_order
+    # DEPRECATED: raw_answer is kept for backwards compatibility and will be removed
+    # after 2 releases. Consumers should use 'normalized_answer' instead.
+    # See council-candidate-detail-design.md Epic F for details.
+    if row.get("raw_answer") is not None:
+        logger.warning(
+            "raw_answer accessed in API response; "
+            "run_id=%s candidate_id=%s will be removed after 2 releases",
+            candidate.get("run_id"),
+            candidate.get("candidate_id"),
+            run_id=candidate.get("run_id"),
+        )
     row["raw_text"] = row.get("raw_answer")
     return row
 
