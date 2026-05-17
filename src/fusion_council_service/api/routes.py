@@ -108,6 +108,7 @@ def _candidate_contract(candidate: dict, fallback_order: int) -> dict:
             candidate.get("run_id"),
             candidate.get("candidate_id"),
             run_id=candidate.get("run_id"),
+            candidate_id=candidate.get("candidate_id"),
         )
     row["raw_text"] = row.get("raw_answer")
     return row

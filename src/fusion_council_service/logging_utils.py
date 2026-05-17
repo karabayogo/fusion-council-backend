@@ -28,12 +28,13 @@ class SafeLogger:
     def __init__(self, name: str):
         self._logger = logging.getLogger(name)
 
-    def _log(self, level: int, msg: str, run_id: Optional[str] = None, event_type: Optional[str] = None):
+    def _log(self, level: int, msg: str, *args, run_id: Optional[str] = None, event_type: Optional[str] = None, candidate_id: Optional[str] = None):
         record = self._logger.makeRecord(
-            self._logger.name, level, "(unknown)", 0, msg, (), None
+            self._logger.name, level, "(unknown)", 0, msg, args, None
         )
         record.run_id = run_id or ""
         record.event_type = event_type or ""
+        record.candidate_id = candidate_id or ""
         self._logger.handle(record)
 
     def info(self, msg: str, **kwargs):
