@@ -14,9 +14,14 @@ dependencies = [
     "orjson",
     "python-dotenv",
     "pyyaml",
+    "structlog",
     "sqlalchemy>=2.0",
     "psycopg2-binary",
     "alembic",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-exporter-otlp-proto-common",
 ]
 
 [project.optional-dependencies]

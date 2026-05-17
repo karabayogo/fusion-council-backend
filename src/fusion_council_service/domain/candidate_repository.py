@@ -2,6 +2,8 @@
 
 from typing import Optional
 
+from opentelemetry import trace
+
 from fusion_council_service import metrics as app_metrics
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import (
@@ -10,6 +12,10 @@ from fusion_council_service.db import (
     execute_sql_one,
     execute_sql,
 )
+from fusion_council_service.logging_utils import get_logger
+
+log = get_logger("fusion_council_service.domain.candidate_repository")
+_tracer = trace.get_tracer(__name__)
 
 
 def _next_execution_order(db, run_id: str) -> int:
@@ -56,7 +62,15 @@ def insert_candidate(
         },
     )
     commit_tx(db)
-    return get_candidate(db, candidate_id)
+    candidate = get_candidate(db, candidate_id)
+    log.info(
+        "candidate_inserted",
+        run_id=run_id,
+        candidate_id=candidate_id,
+        stage=stage,
+        status=status,
+    )
+    return candidate
 
 
 def get_candidate(db, candidate_id: str) -> Optional[dict]:
@@ -80,59 +94,69 @@ def update_candidate_result(
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    execute_sql(
-        db,
-        """
-        UPDATE run_candidates
-        SET status = :status, raw_answer = :raw_answer, normalized_answer = :normalized_answer,
-            score_json = :score_json, latency_ms = :latency_ms, input_tokens = :input_tokens,
-            output_tokens = :output_tokens, error_code = :error_code,
-            error_message = :error_message, updated_at = :updated_at
-        WHERE candidate_id = :candidate_id
-        """,
-        {
-            "status": status,
-            "raw_answer": raw_answer,
-            "normalized_answer": normalized_answer,
-            "score_json": score_json,
-            "latency_ms": latency_ms,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "error_code": error_code,
-            "error_message": error_message,
-            "updated_at": utc_now_iso(),
-            "candidate_id": candidate_id,
-        },
-    )
-    commit_tx(db)
-    candidate = get_candidate(db, candidate_id)
-    app_metrics.increment_candidate_status(status)
-    if candidate and latency_ms is not None:
-        app_metrics.observe_stage_duration(candidate["stage"], latency_ms / 1000.0)
+    with _tracer.start_as_current_span("update_candidate_result"):
+        execute_sql(
+            db,
+            """
+            UPDATE run_candidates
+            SET status = :status, raw_answer = :raw_answer, normalized_answer = :normalized_answer,
+                score_json = :score_json, latency_ms = :latency_ms, input_tokens = :input_tokens,
+                output_tokens = :output_tokens, error_code = :error_code,
+                error_message = :error_message, updated_at = :updated_at
+            WHERE candidate_id = :candidate_id
+            """,
+            {
+                "status": status,
+                "raw_answer": raw_answer,
+                "normalized_answer": normalized_answer,
+                "score_json": score_json,
+                "latency_ms": latency_ms,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "error_code": error_code,
+                "error_message": error_message,
+                "updated_at": utc_now_iso(),
+                "candidate_id": candidate_id,
+            },
+        )
+        commit_tx(db)
+        candidate = get_candidate(db, candidate_id)
+        app_metrics.increment_candidate_status(status)
+        if candidate and latency_ms is not None:
+            app_metrics.observe_stage_duration(candidate["stage"], latency_ms / 1000.0)
+            log.info(
+                "candidate_completed",
+                run_id=candidate.get("run_id"),
+                candidate_id=candidate_id,
+                stage=candidate.get("stage"),
+                status=status,
+                duration_ms=latency_ms,
+            )
 
 
 def list_candidates_for_run(db, run_id: str) -> list[dict]:
-    return execute_sql_all(
-        db,
-        """
-        SELECT * FROM run_candidates
-        WHERE run_id = :run_id
-        ORDER BY
-          COALESCE(execution_order, 999999),
-          CASE stage
-            WHEN 'generation' THEN 10
-            WHEN 'first_opinion' THEN 20
-            WHEN 'peer_review' THEN 30
-            WHEN 'debate' THEN 40
-            WHEN 'synthesis' THEN 50
-            WHEN 'verification' THEN 60
-            ELSE 999
-          END,
-          created_at,
-          candidate_id
-        """,
-        {"run_id": run_id},
-    )
+    with _tracer.start_as_current_span("list_candidates_for_run"):
+        return execute_sql_all(
+            db,
+            """
+            SELECT * FROM run_candidates
+            WHERE run_id = :run_id
+            ORDER BY
+              COALESCE(execution_order, 999999),
+              CASE stage
+                WHEN 'generation' THEN 10
+                WHEN 'first_opinion' THEN 20
+                WHEN 'peer_review' THEN 30
+                WHEN 'debate' THEN 40
+                WHEN 'synthesis' THEN 50
+                WHEN 'verification' THEN 60
+                ELSE 999
+              END,
+              created_at,
+              candidate_id
+            """,
+            {"run_id": run_id},
+        )
 
 
 def count_candidates_for_run(db, run_id: str) -> int:

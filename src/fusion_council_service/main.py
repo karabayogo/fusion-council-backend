@@ -9,6 +9,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+# OpenTelemetry imports
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry import trace
+
 from fusion_council_service import metrics as app_metrics
 from fusion_council_service.api.routes import init_api, router
 from fusion_council_service.clock import utc_now_iso
@@ -23,6 +29,14 @@ load_dotenv()
 
 setup_logging()
 logger = get_logger("fusion_council_service")
+
+# OpenTelemetry service name
+OTEL_SERVICE_NAME = "fusion-council-api"
+
+# Set up OpenTelemetry tracer provider with console exporter
+_tracer_provider = TracerProvider()
+_tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(_tracer_provider)
 
 # Global state
 _settings: Optional[Settings] = None
@@ -115,6 +129,9 @@ app = FastAPI(
     description="Multi-LLM orchestration backend — fusion council engine",
     lifespan=lifespan,
 )
+
+# Instrument FastAPI with OpenTelemetry
+FastAPIInstrumentor.instrument_app(app, service_name=OTEL_SERVICE_NAME)
 
 # CORS for local dev
 app.add_middleware(
