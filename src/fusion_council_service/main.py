@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 # OpenTelemetry imports
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.resources import Resource
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry import trace
 
@@ -33,8 +34,10 @@ logger = get_logger("fusion_council_service")
 # OpenTelemetry service name
 OTEL_SERVICE_NAME = "fusion-council-api"
 
-# Set up OpenTelemetry tracer provider with console exporter
-_tracer_provider = TracerProvider()
+# Set up OpenTelemetry tracer provider with console exporter and service name resource
+_tracer_provider = TracerProvider(
+    resource=Resource.create({"service.name": OTEL_SERVICE_NAME})
+)
 _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 trace.set_tracer_provider(_tracer_provider)
 
@@ -131,7 +134,7 @@ app = FastAPI(
 )
 
 # Instrument FastAPI with OpenTelemetry
-FastAPIInstrumentor.instrument_app(app, service_name=OTEL_SERVICE_NAME)
+FastAPIInstrumentor.instrument_app(app, tracer_provider=_tracer_provider)
 
 # CORS for local dev
 app.add_middleware(
