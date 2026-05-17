@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from fusion_council_service import metrics as app_metrics
 from fusion_council_service.db import (
     begin_immediate,
     commit_tx,
@@ -75,6 +76,24 @@ def update_run_status(db, run_id: str, status: str, **kwargs) -> None:
         values,
     )
     commit_tx(db)
+    if status in {"succeeded", "succeeded_degraded", "failed"}:
+        record_terminal_run_metrics(db, run_id)
+
+
+def record_terminal_run_metrics(db, run_id: str) -> None:
+    row = execute_sql_one(
+        db,
+        """
+        SELECT runs.mode AS mode, COUNT(run_candidates.candidate_id) AS candidate_count
+        FROM runs
+        LEFT JOIN run_candidates ON run_candidates.run_id = runs.run_id
+        WHERE runs.run_id = :run_id
+        GROUP BY runs.run_id, runs.mode
+        """,
+        {"run_id": run_id},
+    )
+    if row and row["mode"] == "council":
+        app_metrics.observe_terminal_council_run(run_id, int(row["candidate_count"] or 0))
 
 
 def list_runs(db, limit: int = 50) -> list[dict]:

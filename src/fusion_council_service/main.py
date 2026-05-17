@@ -7,8 +7,9 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from fusion_council_service import metrics as app_metrics
 from fusion_council_service.api.routes import init_api, router
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.config import Settings
@@ -142,13 +143,16 @@ async def readyz():
 
 @app.get("/metrics")
 async def metrics():
-    """Basic metrics endpoint."""
+    """Prometheus text metrics endpoint."""
     if _settings is None:
         raise RuntimeError("Settings not initialized")
-    return {
-        "app_env": _settings.APP_ENV,
-        "catalog_models": len(_catalog) if _catalog else 0,
-    }
+    return PlainTextResponse(
+        app_metrics.render_prometheus(
+            app_env=_settings.APP_ENV,
+            catalog_models=len(_catalog) if _catalog else 0,
+        ),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 if __name__ == "__main__":

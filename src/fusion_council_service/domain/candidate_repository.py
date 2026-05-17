@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from fusion_council_service import metrics as app_metrics
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import (
     commit_tx,
@@ -104,6 +105,10 @@ def update_candidate_result(
         },
     )
     commit_tx(db)
+    candidate = get_candidate(db, candidate_id)
+    app_metrics.increment_candidate_status(status)
+    if candidate and latency_ms is not None:
+        app_metrics.observe_stage_duration(candidate["stage"], latency_ms / 1000.0)
 
 
 def list_candidates_for_run(db, run_id: str) -> list[dict]:
@@ -128,3 +133,12 @@ def list_candidates_for_run(db, run_id: str) -> list[dict]:
         """,
         {"run_id": run_id},
     )
+
+
+def count_candidates_for_run(db, run_id: str) -> int:
+    row = execute_sql_one(
+        db,
+        "SELECT COUNT(*) AS count FROM run_candidates WHERE run_id = :run_id",
+        {"run_id": run_id},
+    )
+    return int(row["count"] if row and row["count"] is not None else 0)
