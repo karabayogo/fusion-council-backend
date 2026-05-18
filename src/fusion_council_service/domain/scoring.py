@@ -28,7 +28,7 @@ def compute_pairwise_agreement(candidates: list[dict]) -> float:
     if len(candidates) < 2:
         return 1.0
 
-    texts = [c.get("normalized_answer", "") or c.get("raw_answer", "") or "" for c in candidates]
+    texts = [c.get("normalized_answer", "") or "" for c in candidates]
     pairs = 0
     total_sim = 0.0
     for i in range(len(texts)):
@@ -49,11 +49,11 @@ def select_best_candidate(candidates: list[dict]) -> Optional[dict]:
         failed = [c for c in candidates if c.get("status") == "failed"]
         if not failed:
             return None
-        failed.sort(key=lambda c: len(c.get("raw_answer", "") or ""), reverse=True)
+        failed.sort(key=lambda c: len(c.get("normalized_answer", "") or ""), reverse=True)
         return failed[0]
 
     # Pick the succeeded candidate with the longest answer
-    succeeded.sort(key=lambda c: len(c.get("raw_answer", "") or ""), reverse=True)
+    succeeded.sort(key=lambda c: len(c.get("normalized_answer", "") or ""), reverse=True)
     return succeeded[0]
 
 
@@ -65,7 +65,7 @@ def build_fusion_prompt(prompt: str, candidates: list[dict]) -> str:
     parts.append("Below are answers from multiple AI models:\n")
     for i, c in enumerate(candidates, 1):
         alias = c.get("alias", f"model-{i}")
-        answer = c.get("raw_answer", "") or c.get("normalized_answer", "") or "No answer"
+        answer = c.get("normalized_answer", "") or "No answer"
         status = c.get("status", "unknown")
         parts.append(f"---\nModel {i} ({alias}, status: {status}):\n{answer}\n")
     parts.append("---\n")
@@ -89,20 +89,20 @@ def build_council_synthesis_prompt(
     parts.append("## First Opinions\n")
     for i, c in enumerate(first_opinions, 1):
         alias = c.get("alias", f"model-{i}")
-        answer = c.get("raw_answer", "") or "No answer"
+        answer = c.get("normalized_answer", "") or "No answer"
         parts.append(f"### {alias}:\n{answer}\n")
 
     parts.append("## Peer Reviews\n")
     for i, c in enumerate(peer_reviews, 1):
         alias = c.get("alias", f"reviewer-{i}")
-        answer = c.get("raw_answer", "") or "No review"
+        answer = c.get("normalized_answer", "") or "No review"
         parts.append(f"### {alias}:\n{answer}\n")
 
     if debate_candidates:
         parts.append("## Debate\n")
         for i, c in enumerate(debate_candidates, 1):
             alias = c.get("alias", f"debater-{i}")
-            answer = c.get("raw_answer", "") or "No debate input"
+            answer = c.get("normalized_answer", "") or "No debate input"
             parts.append(f"### {alias}:\n{answer}\n")
 
     parts.append("---\n")
@@ -147,7 +147,7 @@ def build_debate_prompt(prompt: str, opinions: list[dict]) -> str:
     parts.append("The following models have given conflicting answers. Debate the key points of disagreement:\n\n")
     for i, c in enumerate(opinions, 1):
         alias = c.get("alias", f"model-{i}")
-        answer = c.get("raw_answer", "") or "No answer"
+        answer = c.get("normalized_answer", "") or "No answer"
         parts.append(f"**{alias}** says:\n{answer}\n\n")
     parts.append(
         "Each participant: defend your position or concede if the other side has a stronger argument. "

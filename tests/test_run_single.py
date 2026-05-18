@@ -92,10 +92,10 @@ def test_single_run_succeeds_with_mocked_provider(tmp_db, setup_single_run, mock
         insert_candidate(tmp_db, run_id, cand_id, "test-alias", "test-provider",
                          "test-model", "generation", "succeeded", utc_now_iso())
         update_candidate_result(tmp_db, cand_id, "succeeded",
-                                raw_answer="The answer is 2",
+                                normalized_answer="The answer is 2",
                                 latency_ms=500)
 
         cands = list_candidates_for_run(tmp_db, run_id)
         assert len(cands) == 1
         assert cands[0]["status"] == "succeeded"
-        assert "2" in (cands[0]["raw_answer"] or "")
+        assert "2" in (cands[0]["normalized_answer"] or "")

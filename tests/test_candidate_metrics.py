@@ -42,7 +42,7 @@ def test_update_candidate_result_records_status_and_stage_latency_metrics(tmp_db
     _insert_run(tmp_db)
     insert_candidate(tmp_db, "run_metrics", "cand_metric", "alias", "provider", "model", "first_opinion", "running", utc_now_iso())
 
-    update_candidate_result(tmp_db, "cand_metric", "succeeded", raw_answer="ok", latency_ms=1250)
+    update_candidate_result(tmp_db, "cand_metric", "succeeded", normalized_answer="ok", latency_ms=1250)
 
     rendered = metrics.render_prometheus()
     assert 'council_candidate_status_total{status="succeeded"} 1' in rendered

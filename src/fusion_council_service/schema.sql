@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS run_candidates (
   latency_ms INTEGER,
   input_tokens INTEGER,
   output_tokens INTEGER,
-  raw_answer TEXT,
   normalized_answer TEXT,
   score_json TEXT,
   error_code TEXT,

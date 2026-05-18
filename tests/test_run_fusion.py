@@ -77,16 +77,16 @@ def test_cosine_similarity_different_text():
 
 def test_pairwise_agreement_high():
     cands = [
-        {"raw_answer": "The answer is definitely 2", "normalized_answer": ""},
-        {"raw_answer": "The answer is definitely 2", "normalized_answer": ""},
+        {"normalized_answer": "The answer is definitely 2"},
+        {"normalized_answer": "The answer is definitely 2"},
     ]
     assert compute_pairwise_agreement(cands) >= 0.999
 
 
 def test_pairwise_agreement_low():
     cands = [
-        {"raw_answer": "The sky is blue", "normalized_answer": ""},
-        {"raw_answer": "Quantum physics is fascinating", "normalized_answer": ""},
+        {"normalized_answer": "The sky is blue"},
+        {"normalized_answer": "Quantum physics is fascinating"},
     ]
     # Different texts should have low agreement
     assert 0.0 <= compute_pairwise_agreement(cands) < 1.0
@@ -94,29 +94,29 @@ def test_pairwise_agreement_low():
 
 def test_select_best_candidate_prefers_succeeded():
     cands = [
-        {"status": "failed", "raw_answer": "error"},
-        {"status": "succeeded", "raw_answer": "The answer is 2"},
-        {"status": "succeeded", "raw_answer": "It's 2"},
+        {"status": "failed", "normalized_answer": "error"},
+        {"status": "succeeded", "normalized_answer": "The answer is 2"},
+        {"status": "succeeded", "normalized_answer": "It's 2"},
     ]
     best = select_best_candidate(cands)
     assert best["status"] == "succeeded"
-    assert "2" in best["raw_answer"]
+    assert "2" in best["normalized_answer"]
 
 
 def test_select_best_candidate_all_failed():
     cands = [
-        {"status": "failed", "raw_answer": "error 1"},
-        {"status": "failed", "raw_answer": "error 2 longer"},
+        {"status": "failed", "normalized_answer": "error 1"},
+        {"status": "failed", "normalized_answer": "error 2 longer"},
     ]
     best = select_best_candidate(cands)
     assert best["status"] == "failed"
-    assert "error 2 longer" in best["raw_answer"]
+    assert "error 2 longer" in best["normalized_answer"]
 
 
 def test_build_fusion_prompt_includes_all_candidates():
     cands = [
-        {"alias": "model-a", "raw_answer": "Answer A", "status": "succeeded"},
-        {"alias": "model-b", "raw_answer": "Answer B", "status": "succeeded"},
+        {"alias": "model-a", "normalized_answer": "Answer A", "status": "succeeded"},
+        {"alias": "model-b", "normalized_answer": "Answer B", "status": "succeeded"},
     ]
     prompt = build_fusion_prompt("What is 1+1?", cands)
     assert "Original question" in prompt
