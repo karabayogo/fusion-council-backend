@@ -85,7 +85,6 @@ def update_candidate_result(
     db,
     candidate_id: str,
     status: str,
-    raw_answer: Optional[str] = None,
     normalized_answer: Optional[str] = None,
     score_json: Optional[str] = None,
     latency_ms: Optional[int] = None,
@@ -99,7 +98,7 @@ def update_candidate_result(
             db,
             """
             UPDATE run_candidates
-            SET status = :status, raw_answer = :raw_answer, normalized_answer = :normalized_answer,
+            SET status = :status, normalized_answer = :normalized_answer,
                 score_json = :score_json, latency_ms = :latency_ms, input_tokens = :input_tokens,
                 output_tokens = :output_tokens, error_code = :error_code,
                 error_message = :error_message, updated_at = :updated_at
@@ -107,7 +106,6 @@ def update_candidate_result(
             """,
             {
                 "status": status,
-                "raw_answer": raw_answer,
                 "normalized_answer": normalized_answer,
                 "score_json": score_json,
                 "latency_ms": latency_ms,

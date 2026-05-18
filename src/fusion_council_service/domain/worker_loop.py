@@ -213,7 +213,7 @@ class Worker:
         if success:
             insert_candidate(db, run_id, candidate_id, model["alias"], model["provider"],
                              model["provider_model"], "generation", "succeeded", utc_now_iso())
-            update_candidate_result(db, candidate_id, "succeeded", raw_answer=raw_text,
+            update_candidate_result(db, candidate_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             emit_candidate_completed(db, run_id, candidate_id, model["alias"], "generation")
 
@@ -247,7 +247,7 @@ class Worker:
                 if fb_ok:
                     insert_candidate(db, run_id, fb_candidate_id, fallback["alias"], fallback["provider"],
                                      fallback["provider_model"], "generation", "succeeded", utc_now_iso())
-                    update_candidate_result(db, fb_candidate_id, "succeeded", raw_answer=fb_txt,
+                    update_candidate_result(db, fb_candidate_id, "succeeded", normalized_answer=fb_txt,
                                             latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                     emit_candidate_completed(db, run_id, fb_candidate_id, fallback["alias"], "generation")
                     execute_sql(
@@ -307,7 +307,7 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "generation", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "generation")
                 gen_candidates.append(get_candidate(db, cand_id) or {})
@@ -323,7 +323,7 @@ class Worker:
         degradation = self._check_deadline(run)
         if degradation and succeeded:
             best = select_best_candidate(succeeded)
-            best_text = best.get("raw_answer", "") if best else ""
+            best_text = best.get("normalized_answer", "") if best else ""
             await self._finalize_degraded(db, run_id, "fusion", degradation, best_text)
             return
 
@@ -346,7 +346,7 @@ class Worker:
                     if fb_success:
                         insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
                                          fallback["provider_model"], "generation", "succeeded", utc_now_iso())
-                        update_candidate_result(db, cand_id, "succeeded", raw_answer=fb_text,
+                        update_candidate_result(db, cand_id, "succeeded", normalized_answer=fb_text,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "generation")
                         succeeded.append(get_candidate(db, cand_id) or {})
@@ -367,7 +367,7 @@ class Worker:
         degradation = self._check_deadline(run)
         if degradation:
             best = select_best_candidate(succeeded)
-            best_text = best.get("raw_answer", "") if best else ""
+            best_text = best.get("normalized_answer", "") if best else ""
             await self._finalize_degraded(db, run_id, "fusion", degradation, best_text)
             return
 
@@ -388,7 +388,7 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                              synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
             synthesis_text = raw_text
@@ -396,7 +396,7 @@ class Worker:
             insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                              synth_model["provider_model"], "synthesis", "failed", utc_now_iso())
             update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
-            synthesis_text = succeeded[0].get("raw_answer", "") if succeeded else "No answer available."
+            synthesis_text = succeeded[0].get("normalized_answer", "") if succeeded else "No answer available."
 
         # Stage 3: verification
         # Deadline check — skip verification if under deadline pressure
@@ -421,7 +421,7 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, verif_model["alias"], verif_model["provider"],
                              verif_model["provider_model"], "verification", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             # Parse verification verdict
             confidence = 0.5
@@ -483,7 +483,7 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, m["alias"], m["provider"],
                                  m["provider_model"], "first_opinion", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, m["alias"], "first_opinion")
                 first_opinions.append(get_candidate(db, cand_id) or {})
@@ -500,7 +500,7 @@ class Worker:
         degradation = self._check_deadline(run)
         if degradation and succeeded_opinions:
             best = select_best_candidate(succeeded_opinions)
-            best_text = best.get("raw_answer", "") if best else ""
+            best_text = best.get("normalized_answer", "") if best else ""
             await self._finalize_degraded(db, run_id, "council", degradation, best_text)
             return
 
@@ -523,7 +523,7 @@ class Worker:
                     if fb_ok:
                         insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
                                          fallback["provider_model"], "first_opinion", "succeeded", utc_now_iso())
-                        update_candidate_result(db, cand_id, "succeeded", raw_answer=fb_txt,
+                        update_candidate_result(db, cand_id, "succeeded", normalized_answer=fb_txt,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "first_opinion")
                         succeeded_opinions.append(get_candidate(db, cand_id) or {})
@@ -556,13 +556,13 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                                  synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
                 synthesis_text = raw_text
             else:
                 best = select_best_candidate(succeeded_opinions)
-                synthesis_text = best.get("raw_answer", "") if best else "Council synthesis failed."
+                synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
             await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text)
             return
 
@@ -571,7 +571,7 @@ class Worker:
         review_tasks = []
         for opinion_cand in succeeded_opinions:
             reviewer = models[0]  # Use first model as reviewer (simplified)
-            review_prompt = build_peer_review_prompt(run["prompt"], opinion_cand.get("raw_answer", ""), reviewer["alias"])
+            review_prompt = build_peer_review_prompt(run["prompt"], opinion_cand.get("normalized_answer", ""), reviewer["alias"])
             request = ProviderGenerateRequest(
                 alias=reviewer["alias"], provider=reviewer["provider"],
                 provider_model=reviewer["provider_model"],
@@ -594,7 +594,7 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "peer_review", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "peer_review")
                 peer_reviews.append(get_candidate(db, cand_id) or {})
@@ -629,7 +629,7 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, debate_model["alias"], debate_model["provider"],
                                  debate_model["provider_model"], "debate", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, debate_model["alias"], "debate")
                 debate_cands.append(get_candidate(db, cand_id) or {})
@@ -653,13 +653,13 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                              synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
             synthesis_text = raw_text
         else:
             best = select_best_candidate(succeeded_opinions)
-            synthesis_text = best.get("raw_answer", "") if best else "Council synthesis failed."
+            synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
 
         # Stage 5: verification
         # Deadline check — skip verification if deadline imminent
@@ -683,7 +683,7 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, verif_model["alias"], verif_model["provider"],
                              verif_model["provider_model"], "verification", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", raw_answer=raw_text,
+            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             try:
                 v_data = json.loads(raw_text)

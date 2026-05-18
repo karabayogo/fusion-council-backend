@@ -71,7 +71,7 @@ class TestAnswersEndpoint:
         cand1 = new_candidate_id()
         insert_candidate(db, run_id, cand1, "minimax-portal/MiniMax-M2.7", "minimax_token_plan",
                          "MiniMax-M2.7", "generation", "succeeded", utc_now_iso())
-        update_candidate_result(db, cand1, "succeeded", raw_answer="Answer from MiniMax")
+        update_candidate_result(db, cand1, "succeeded", normalized_answer="Answer from MiniMax")
 
         cand2 = new_candidate_id()
         insert_candidate(db, run_id, cand2, "ollama/glm-5.1:cloud", "ollama_cloud",
@@ -135,12 +135,12 @@ class TestAnswersEndpoint:
         cand1 = new_candidate_id()
         insert_candidate(db, run_id, cand1, "model-a", "opencode-go",
                          "deepseek", "first_opinion", "succeeded", "2026-01-01T00:00:01Z")
-        update_candidate_result(db, cand1, "succeeded", raw_answer="first real answer")
+        update_candidate_result(db, cand1, "succeeded", normalized_answer="first real answer")
 
         cand2 = new_candidate_id()
         insert_candidate(db, run_id, cand2, "model-b", "opencode-go",
                          "qwen", "first_opinion", "succeeded", "2026-01-01T00:00:02Z")
-        update_candidate_result(db, cand2, "succeeded", raw_answer="second real answer")
+        update_candidate_result(db, cand2, "succeeded", normalized_answer="second real answer")
 
         from fastapi.testclient import TestClient
         from fusion_council_service.main import app
@@ -167,7 +167,7 @@ class TestAnswersEndpoint:
 
         candidates = data["candidates"]
         assert [c["raw_text"] for c in candidates] == ["first real answer", "second real answer"]
-        assert [c["raw_answer"] for c in candidates] == ["first real answer", "second real answer"]
+        assert [c["normalized_answer"] for c in candidates] == ["first real answer", "second real answer"]
         assert [c["execution_order"] for c in candidates] == [1, 2]
         assert all(c["candidate_id"] for c in candidates)
         assert all(c["stage"] == "first_opinion" for c in candidates)

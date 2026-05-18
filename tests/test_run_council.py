@@ -60,11 +60,11 @@ def test_council_quorum_not_met_with_only_1_success(tmp_db, council_run_setup):
 
 def test_build_council_synthesis_prompt():
     opinions = [
-        {"alias": "model-a", "raw_answer": "Yes, consciousness emerges."},
-        {"alias": "model-b", "raw_answer": "No, not in current AI."},
+        {"alias": "model-a", "normalized_answer": "Yes, consciousness emerges."},
+        {"alias": "model-b", "normalized_answer": "No, not in current AI."},
     ]
     reviews = [
-        {"alias": "reviewer-1", "raw_answer": "Good analysis."},
+        {"alias": "reviewer-1", "normalized_answer": "Good analysis."},
     ]
     prompt = build_council_synthesis_prompt("Is AI consciousness possible?", opinions, reviews)
     assert "Original question" in prompt
@@ -87,8 +87,8 @@ def test_build_peer_review_prompt():
 
 def test_build_debate_prompt():
     opinions = [
-        {"alias": "model-a", "raw_answer": "Yes"},
-        {"alias": "model-b", "raw_answer": "No"},
+        {"alias": "model-a", "normalized_answer": "Yes"},
+        {"alias": "model-b", "normalized_answer": "No"},
     ]
     prompt = build_debate_prompt("Is AI consciousness possible?", opinions)
     assert "Original question" in prompt
@@ -107,8 +107,8 @@ def test_build_verification_prompt():
 
 def test_debate_triggers_on_low_agreement():
     cands = [
-        {"raw_answer": "Yes definitely", "normalized_answer": ""},
-        {"raw_answer": "No absolutely not", "normalized_answer": ""},
+        {"normalized_answer": "Yes definitely"},
+        {"normalized_answer": "No absolutely not"},
     ]
     agreement = compute_pairwise_agreement(cands)
     assert agreement < 0.55  # Should trigger debate
