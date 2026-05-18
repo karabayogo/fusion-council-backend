@@ -6,6 +6,20 @@ from typing import Generator
 
 import pytest
 
+
+def pytest_sessionfinish(session, exitstatus):
+    """Flush/shutdown OpenTelemetry before pytest closes captured streams."""
+    try:
+        from opentelemetry import trace
+
+        provider = trace.get_tracer_provider()
+        shutdown = getattr(provider, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+    except Exception:
+        # Test cleanup should never mask the actual test result.
+        pass
+
 # Set test env before importing the app
 os.environ.update({
     "DATABASE_PATH": ":memory:",
@@ -17,6 +31,7 @@ os.environ.update({
     "MINIMAX_ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic",
     "OLLAMA_BASE_URL": "https://ollama.com",
     "MODEL_CATALOG_PATH": os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml"),
+    "OTEL_TRACES_EXPORTER": "none",
 })
 
 

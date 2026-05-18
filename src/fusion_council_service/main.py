@@ -34,11 +34,14 @@ logger = get_logger("fusion_council_service")
 # OpenTelemetry service name
 OTEL_SERVICE_NAME = "fusion-council-api"
 
-# Set up OpenTelemetry tracer provider with console exporter and service name resource
+# Set up OpenTelemetry tracer provider with service name resource.
+# Console exporting is enabled by default for runtime visibility, but tests and
+# non-console deployments can set OTEL_TRACES_EXPORTER=none to avoid noisy span dumps.
 _tracer_provider = TracerProvider(
     resource=Resource.create({"service.name": OTEL_SERVICE_NAME})
 )
-_tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+if os.environ.get("OTEL_TRACES_EXPORTER", "console").lower() not in {"none", "false", "off"}:
+    _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
 trace.set_tracer_provider(_tracer_provider)
 
 # Global state
