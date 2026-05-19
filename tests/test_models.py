@@ -111,7 +111,7 @@ def test_mode_selection_is_config_driven_by_enabled_roles():
     assert [m["alias"] for m in select_models_for_mode("council", catalog)] == [
         "yaml-primary",
         "yaml-reviewer",
-        "yaml-synthesis",
+        "yaml-backup",
     ]
 
 
