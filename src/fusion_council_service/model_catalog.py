@@ -19,7 +19,7 @@ logger = get_logger("fusion_council_service.model_catalog")
 # truth for which models exist and whether they are enabled.
 SINGLE_ROLE_ORDER = ["primary", "backup", "synthesis", "reviewer", "verification", "creative"]
 FUSION_ROLE_ORDER = ["primary", "reviewer", "synthesis", "creative", "verification", "backup"]
-COUNCIL_ROLE_ORDER = ["primary", "reviewer", "creative", "synthesis", "verification", "backup"]
+COUNCIL_ROLE_ORDER = ["primary", "reviewer", "creative", "backup", "verification", "synthesis"]
 
 
 class ModelCatalog:

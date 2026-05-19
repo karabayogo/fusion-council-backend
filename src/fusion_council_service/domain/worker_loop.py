@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
-from fusion_council_service.db import new_session, initialize_schema, execute_sql, commit_tx
+from fusion_council_service.db import new_session, initialize_schema, execute_sql, execute_sql_all, commit_tx
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import get_candidate, insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
@@ -139,19 +139,58 @@ class Worker:
         update_run_status(db, run_id, "succeeded_degraded", final_answer=best_text,
                           final_confidence=confidence, degraded_reason=reason)
 
+    def _attempted_model_identities(self, db: object, run_id: str) -> tuple[set[str], set[tuple[str, str]]]:
+        """Return aliases and upstream provider/model pairs already attempted for a run."""
+        rows = execute_sql_all(
+            db,
+            """
+            SELECT alias, provider, provider_model
+            FROM run_candidates
+            WHERE run_id = :run_id
+            """,
+            {"run_id": run_id},
+        )
+        aliases: set[str] = set()
+        upstream_pairs: set[tuple[str, str]] = set()
+        for row in rows:
+            alias = row.get("alias")
+            provider = row.get("provider")
+            provider_model = row.get("provider_model")
+            if alias:
+                aliases.add(alias)
+            if provider and provider_model:
+                upstream_pairs.add((provider, provider_model))
+        return aliases, upstream_pairs
+
     def _try_fallback(self, db: object, run: dict, failed_alias: str) -> Optional[dict]:
         """Try to promote a fallback model for a failed primary.
-        Returns the fallback model dict or None.
+
+        A fallback must be a genuinely new upstream attempt for this run. Reusing
+        the same alias or the same (provider, provider_model) pair causes noisy
+        duplicate candidates, burns deadline budget, and does not improve quorum
+        diversity when an upstream provider/model is unhealthy.
         """
         mode = run["mode"]
-        active_aliases = {m["alias"] for m in select_models_for_mode(mode, self._catalog)}
+        active_models = select_models_for_mode(mode, self._catalog)
+        blocked_aliases = {m["alias"] for m in active_models}
+        blocked_pairs = {(m.get("provider", ""), m.get("provider_model", "")) for m in active_models}
+        attempted_aliases, attempted_pairs = self._attempted_model_identities(db, run["run_id"])
+        blocked_aliases.update(attempted_aliases)
+        blocked_pairs.update(attempted_pairs)
+        blocked_aliases.add(failed_alias)
+
         for model in self._catalog.enabled_models():
             alias = model["alias"]
-            if alias == failed_alias or alias in active_aliases:
+            pair = (model.get("provider", ""), model.get("provider_model", ""))
+            if alias in blocked_aliases or pair in blocked_pairs:
                 continue
             emit_fallback_promoted(db, run["run_id"], alias, failed_alias)
             logger.info(f"Fallback promoted: {alias} replacing {failed_alias}", run_id=run["run_id"])
             return model
+        logger.warning(
+            f"No unused fallback available for {failed_alias}; all aliases/upstream pairs already attempted",
+            run_id=run["run_id"],
+        )
         return None
 
     async def _call_provider_async(self, request, db: object, run_id: str,
