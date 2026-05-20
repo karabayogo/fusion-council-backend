@@ -172,6 +172,33 @@ class TestAnswersEndpoint:
         assert all(c["candidate_id"] for c in candidates)
         assert all(c["stage"] == "first_opinion" for c in candidates)
 
+
+def test_stage_summaries_include_actual_candidate_aliases_when_stage_event_models_empty():
+    """Stage summaries must expose selected aliases from real candidates.
+
+    Worker control flow can emit stage.started before the downstream model is
+    selected, leaving payload.models empty. The answers contract should still
+    be debuggable by deriving stage models from persisted candidate rows.
+    """
+    from fusion_council_service.api.routes import _stage_summaries
+
+    run = {"current_stage": "completed", "degraded_reason": None}
+    candidates = [
+        {"stage": "peer_review", "alias": "reviewer-a", "status": "succeeded", "created_at": "2026-01-01T00:00:01Z"},
+        {"stage": "peer_review", "alias": "reviewer-b", "status": "failed", "created_at": "2026-01-01T00:00:02Z"},
+        {"stage": "synthesis", "alias": "synth-a", "status": "succeeded", "created_at": "2026-01-01T00:00:03Z"},
+    ]
+    events = [
+        {"event_type": "stage.started", "payload_json": '{"stage":"peer_review","models":[]}', "created_at": "2026-01-01T00:00:00Z"},
+        {"event_type": "stage.started", "payload_json": '{"stage":"synthesis"}', "created_at": "2026-01-01T00:00:00Z"},
+    ]
+
+    stages = {stage["stage"]: stage for stage in _stage_summaries(run, candidates, events)}
+
+    assert stages["peer_review"]["models"] == ["reviewer-a", "reviewer-b"]
+    assert stages["synthesis"]["models"] == ["synth-a"]
+
+
     def test_schema_migration_adds_execution_order_column(self, db):
         """Fresh DBs must include persisted candidate execution_order."""
         columns = [row[1] for row in db.execute("PRAGMA table_info(run_candidates)").fetchall()]

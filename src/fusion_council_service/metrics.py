@@ -10,6 +10,7 @@ _STAGE_DURATION_BUCKETS = (1, 5, 15, 30, 60, 120, 300, float("inf"))
 _lock = Lock()
 
 _candidate_status_total: dict[str, int] = defaultdict(int)
+_failed_upstream_reuse_total: dict[str, int] = defaultdict(int)
 _terminal_without_candidates_total = 0
 _answers_candidate_count_observations: list[float] = []
 _stage_duration_observations: dict[str, list[float]] = defaultdict(list)
@@ -22,6 +23,7 @@ def reset_metrics() -> None:
     global _terminal_without_candidates_total
     with _lock:
         _candidate_status_total.clear()
+        _failed_upstream_reuse_total.clear()
         _terminal_without_candidates_total = 0
         _answers_candidate_count_observations.clear()
         _stage_duration_observations.clear()
@@ -61,6 +63,27 @@ def observe_stage_duration(stage: str, seconds: float) -> None:
         _stage_duration_observations[stage].append(float(seconds))
 
 
+def _observe_failed_upstream_reuse(candidates: list[dict]) -> None:
+    failed_pairs: set[tuple[str, str]] = set()
+    reuse_counts: dict[str, int] = defaultdict(int)
+    for candidate in candidates:
+        provider = candidate.get("provider")
+        provider_model = candidate.get("provider_model")
+        if not provider or not provider_model:
+            continue
+        pair = (provider, provider_model)
+        stage = candidate.get("stage") or "unknown"
+        if pair in failed_pairs:
+            reuse_counts[stage] += 1
+        if candidate.get("status") == "failed":
+            failed_pairs.add(pair)
+    if not reuse_counts:
+        return
+    with _lock:
+        for stage, count in reuse_counts.items():
+            _failed_upstream_reuse_total[stage] += count
+
+
 def observe_answers_payload_once(run_id: str, candidates: list[dict]) -> None:
     """Observe candidate-level metrics once per run from persisted answers payload."""
     with _lock:
@@ -69,6 +92,7 @@ def observe_answers_payload_once(run_id: str, candidates: list[dict]) -> None:
         _observed_answers_payload_run_ids.add(run_id)
 
     observe_council_answers_candidate_count(len(candidates))
+    _observe_failed_upstream_reuse(candidates)
     for candidate in candidates:
         increment_candidate_status(candidate.get("status") or "unknown")
         latency_ms = candidate.get("latency_ms")
@@ -104,6 +128,7 @@ def render_prometheus(app_env: str | None = None, catalog_models: int | None = N
         terminal_without_candidates = _terminal_without_candidates_total
         answer_counts = list(_answers_candidate_count_observations)
         stage_durations = {stage: list(values) for stage, values in _stage_duration_observations.items()}
+        failed_upstream_reuse = dict(_failed_upstream_reuse_total)
 
     lines = [
         "# HELP fusion_council_app_info Static application metadata.",
@@ -131,5 +156,12 @@ def render_prometheus(app_env: str | None = None, catalog_models: int | None = N
     ])
     for status, count in sorted(candidate_status.items()):
         lines.append(f'council_candidate_status_total{{status="{status}"}} {count}')
+
+    lines.extend([
+        "# HELP council_failed_upstream_reuse_total Downstream candidates that reused a provider/model pair after that pair already failed earlier in the same run.",
+        "# TYPE council_failed_upstream_reuse_total counter",
+    ])
+    for stage, count in sorted(failed_upstream_reuse.items()):
+        lines.append(f'council_failed_upstream_reuse_total{{stage="{stage}"}} {count}')
 
     return "\n".join(lines) + "\n"

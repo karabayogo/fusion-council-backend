@@ -15,6 +15,7 @@ from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
+from fusion_council_service.domain.model_selection import select_healthy_stage_model
 from fusion_council_service.domain.run_repository import claim_next_run, reset_stale_running_runs, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
@@ -193,27 +194,14 @@ class Worker:
         *,
         avoid_aliases: Optional[set[str]] = None,
     ) -> Optional[dict]:
-        """Select a healthy model for a later council stage.
-
-        Stage orchestration must not keep routing expensive downstream work to an
-        upstream alias/pair that already failed earlier in the same run.  Prefer
-        models whose role_bias matches the stage, but fall back to any enabled
-        model that has not failed for this run.
-        """
-        avoid_aliases = avoid_aliases or set()
-        failed_aliases, failed_pairs = self._failed_model_identities(db, run_id)
-
-        def usable(model: dict) -> bool:
-            alias = model.get("alias", "")
-            pair = (model.get("provider", ""), model.get("provider_model", ""))
-            return alias not in avoid_aliases and alias not in failed_aliases and pair not in failed_pairs
-
-        enabled = [m for m in self._catalog.enabled_models() if usable(m)]
-        for role in role_order:
-            for model in enabled:
-                if model.get("role_bias") == role:
-                    return model
-        return enabled[0] if enabled else None
+        """Select a healthy model for a later council stage."""
+        return select_healthy_stage_model(
+            db=db,
+            catalog=self._catalog,
+            run_id=run_id,
+            role_order=role_order,
+            avoid_aliases=avoid_aliases,
+        )
 
     def _emit_stage_started(self, db: object, run_id: str, stage: str, models: list[str] = None) -> None:
         update_run_status(
