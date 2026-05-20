@@ -689,11 +689,11 @@ class Worker:
         degradation = self._check_deadline(run)
         if degradation and "skip_peer" in (degradation or ""):
             # Skip peer reviews and debate, go straight to synthesis
-            self._emit_stage_started(db, run_id, "synthesis", [])
-            synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None)
             synth_model = self._select_stage_model(
                 db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
             )
+            self._emit_stage_started(db, run_id, "synthesis", [synth_model["alias"]] if synth_model else [])
+            synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None)
             if synth_model is None:
                 best = select_best_candidate(succeeded_opinions)
                 synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
@@ -716,7 +716,8 @@ class Worker:
             return
 
         # Stage 2: peer reviews
-        self._emit_stage_started(db, run_id, "peer_review", [])
+# Stage 2: peer reviews
+        # Build task list first so we know selected models before emitting stage.started
         review_tasks = []
         for opinion_cand in succeeded_opinions:
             reviewer = self._select_stage_model(
@@ -736,6 +737,9 @@ class Worker:
                 max_output_tokens=run["max_output_tokens"], temperature=0.1,
             )
             review_tasks.append((reviewer, request))
+
+        selected_reviewers = [m["alias"] for m, _ in review_tasks] if review_tasks else []
+        self._emit_stage_started(db, run_id, "peer_review", selected_reviewers)
 
         async def call_review(model, req):
             async with sem:
@@ -784,11 +788,11 @@ class Worker:
                     debate_cands.append(candidate)
 
         # Stage 4: synthesis
-        self._emit_stage_started(db, run_id, "synthesis", [])
-        synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, peer_reviews, debate_cands if debate_cands else None)
         synth_model = self._select_stage_model(
             db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
         )
+        self._emit_stage_started(db, run_id, "synthesis", [synth_model["alias"]] if synth_model else [])
+        synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, peer_reviews, debate_cands if debate_cands else None)
         if synth_model is None:
             logger.warning("No healthy synthesis model available; returning best council opinion", run_id=run_id)
             best = select_best_candidate(succeeded_opinions)
@@ -816,11 +820,11 @@ class Worker:
             await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text, confidence=0.5)
             return
 
-        self._emit_stage_started(db, run_id, "verification", [])
-        verif_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         verif_model = self._select_stage_model(
             db, run_id, ["verification", "reviewer", "backup", "synthesis", "primary", "creative"]
         )
+        self._emit_stage_started(db, run_id, "verification", [verif_model["alias"]] if verif_model else [])
+        verif_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         confidence = 0.5
         if verif_model is None:
             logger.warning("No healthy verification model available; completing without verification", run_id=run_id)
