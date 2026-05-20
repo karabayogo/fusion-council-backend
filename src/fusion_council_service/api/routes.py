@@ -16,7 +16,9 @@ from fusion_council_service.domain.budget import resolve_deadline, select_models
 from fusion_council_service.domain.candidate_repository import list_candidates_for_run
 from fusion_council_service.domain.event_emitter import emit_run_accepted
 from fusion_council_service.domain.event_repository import list_events_for_run
-from fusion_council_service.domain.model_selection import get_health_scores
+from fusion_council_service.domain.model_selection import (
+    get_health_scores, get_health_latencies,
+)
 from fusion_council_service.domain.run_repository import get_run, insert_run, list_runs, update_run_status
 from fusion_council_service.domain.types import RespondRequest, RunRequest, RunResponse
 from fusion_council_service.ids import new_run_id
@@ -188,10 +190,11 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: 
     if db is not None:
         run_id = run.get("run_id", "")
         health_scores = get_health_scores(db)
+        health_latencies = get_health_latencies(db)
 
-        # Build excluded upstreams from failed candidates in this run
-        excluded_upstreams: list[dict] = []
-        seen_excluded: set[tuple[str, str]] = set()
+        # Build excluded upstreams from same-run failed candidates
+        seen_excluded: set = set()
+        excluded_upstreams = []
         for candidate in candidates:
             if candidate.get("status") == "failed":
                 pair = (candidate.get("provider", ""), candidate.get("provider_model", ""))
@@ -211,12 +214,14 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: 
             for c in stage_candidates:
                 pair = (c.get("provider", ""), c.get("provider_model", ""))
                 score = health_scores.get(pair, 1.0)
+                latency = health_latencies.get(pair)
                 candidates_health.append({
                     "alias": c.get("alias", ""),
                     "provider": c.get("provider", ""),
                     "provider_model": c.get("provider_model", ""),
                     "status": c.get("status", ""),
                     "health_score": round(score, 4),
+                    "avg_latency_ms": latency,
                 })
             stage["selection_metadata"] = {
                 "candidates_health": candidates_health,
