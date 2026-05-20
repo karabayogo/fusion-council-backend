@@ -13,8 +13,10 @@ from fusion_council_service.config import Settings
 from fusion_council_service.db import new_session, initialize_schema
 from fusion_council_service import metrics as app_metrics
 from fusion_council_service.domain.budget import resolve_deadline, select_models_for_mode
+from fusion_council_service.domain.candidate_repository import list_candidates_for_run
 from fusion_council_service.domain.event_emitter import emit_run_accepted
 from fusion_council_service.domain.event_repository import list_events_for_run
+from fusion_council_service.domain.model_selection import get_health_scores
 from fusion_council_service.domain.run_repository import get_run, insert_run, list_runs, update_run_status
 from fusion_council_service.domain.types import RespondRequest, RunRequest, RunResponse
 from fusion_council_service.ids import new_run_id
@@ -109,7 +111,7 @@ def _parse_event_payload(event: dict) -> dict:
         return {}
 
 
-def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> list[dict]:
+def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: object = None) -> list[dict]:
     """Build orchestration-stage summaries without creating fake candidate rows."""
     by_stage: dict[str, dict] = {}
 
@@ -181,6 +183,45 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> l
         if summary.get("candidate_count", 0) == 0:
             summary["status"] = "skipped"
             summary["degraded_reason"] = degraded_reason
+
+    # Enrich stages with selection metadata for explainability
+    if db is not None:
+        run_id = run.get("run_id", "")
+        health_scores = get_health_scores(db)
+
+        # Build excluded upstreams from failed candidates in this run
+        excluded_upstreams: list[dict] = []
+        seen_excluded: set[tuple[str, str]] = set()
+        for candidate in candidates:
+            if candidate.get("status") == "failed":
+                pair = (candidate.get("provider", ""), candidate.get("provider_model", ""))
+                if pair not in seen_excluded and pair[0] and pair[1]:
+                    seen_excluded.add(pair)
+                    excluded_upstreams.append({
+                        "provider": pair[0],
+                        "provider_model": pair[1],
+                        "alias": candidate.get("alias", ""),
+                        "stage": candidate.get("stage", ""),
+                    })
+
+        for stage in by_stage.values():
+            stage_name = stage.get("stage", "")
+            stage_candidates = [c for c in candidates if c.get("stage") == stage_name]
+            candidates_health = []
+            for c in stage_candidates:
+                pair = (c.get("provider", ""), c.get("provider_model", ""))
+                score = health_scores.get(pair, 1.0)
+                candidates_health.append({
+                    "alias": c.get("alias", ""),
+                    "provider": c.get("provider", ""),
+                    "provider_model": c.get("provider_model", ""),
+                    "status": c.get("status", ""),
+                    "health_score": round(score, 4),
+                })
+            stage["selection_metadata"] = {
+                "candidates_health": candidates_health,
+                "excluded_upstreams": excluded_upstreams,
+            }
 
     return sorted(by_stage.values(), key=lambda s: (_STAGE_ORDER.get(s["stage"], 999), s["stage"]))
 
@@ -258,7 +299,6 @@ async def get_run_answers(
     auth=Depends(get_auth_dependency()),
 ):
     """Return raw candidate answers and intermediate artifacts for a run."""
-    from fusion_council_service.domain.candidate_repository import list_candidates_for_run
 
     token, role = auth
     db = get_api_db()
@@ -279,7 +319,7 @@ async def get_run_answers(
         "run_id": run_id,
         "mode": run["mode"],
         "status": run["status"],
-        "stages": _stage_summaries(run, candidates, events),
+        "stages": _stage_summaries(run, candidates, events, db=db),
         "candidates": candidates,
         "count": len(candidates),
     }

@@ -88,3 +88,17 @@ CREATE TABLE IF NOT EXISTS model_catalog (
   validated_at TEXT,
   validation_error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS provider_health (
+  provider TEXT NOT NULL,
+  provider_model TEXT NOT NULL,
+  total_attempts INTEGER NOT NULL DEFAULT 0,
+  successes INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  last_failure_at TEXT,
+  last_success_at TEXT,
+  avg_latency_ms REAL DEFAULT 0,
+  health_score REAL DEFAULT 1.0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, provider_model)
+);

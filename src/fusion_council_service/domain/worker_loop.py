@@ -15,7 +15,7 @@ from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
-from fusion_council_service.domain.model_selection import select_healthy_stage_model
+from fusion_council_service.domain.model_selection import select_healthy_stage_model, update_health_for_candidate
 from fusion_council_service.domain.run_repository import claim_next_run, reset_stale_running_runs, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
@@ -228,6 +228,9 @@ class Worker:
         insert_candidate(
             db, run_id, cand_id, model["alias"], model["provider"],
             model["provider_model"], stage, status, utc_now_iso(),
+        )
+        update_health_for_candidate(
+            db, model["provider"], model["provider_model"], success, lat_ms,
         )
         if success:
             update_candidate_result(
@@ -600,6 +603,9 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, m["alias"], m["provider"],
                                  m["provider_model"], "first_opinion", "succeeded", utc_now_iso())
+                update_health_for_candidate(
+                    db, m["provider"], m["provider_model"], True, float(lat_ms) if lat_ms else None,
+                )
                 update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, m["alias"], "first_opinion")
@@ -607,6 +613,9 @@ class Worker:
             else:
                 insert_candidate(db, run_id, cand_id, m["alias"], m["provider"],
                                  m["provider_model"], "first_opinion", "failed", utc_now_iso())
+                update_health_for_candidate(
+                    db, m["provider"], m["provider_model"], False, float(lat_ms) if lat_ms else None,
+                )
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
                 emit_candidate_failed(db, run_id, cand_id, m["alias"], "first_opinion", err_msg or err_code)
                 first_opinions.append(get_candidate(db, cand_id) or {})
@@ -640,6 +649,9 @@ class Worker:
                     if fb_ok:
                         insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
                                          fallback["provider_model"], "first_opinion", "succeeded", utc_now_iso())
+                        update_health_for_candidate(
+                            db, fallback["provider"], fallback["provider_model"], True, float(fb_lat) if fb_lat else None,
+                        )
                         update_candidate_result(db, cand_id, "succeeded", normalized_answer=fb_txt,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "first_opinion")
