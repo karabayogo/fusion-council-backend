@@ -162,6 +162,96 @@ class Worker:
                 upstream_pairs.add((provider, provider_model))
         return aliases, upstream_pairs
 
+    def _failed_model_identities(self, db: object, run_id: str) -> tuple[set[str], set[tuple[str, str]]]:
+        """Return aliases and upstream provider/model pairs that failed for a run."""
+        rows = execute_sql_all(
+            db,
+            """
+            SELECT alias, provider, provider_model
+            FROM run_candidates
+            WHERE run_id = :run_id AND status = 'failed'
+            """,
+            {"run_id": run_id},
+        )
+        aliases: set[str] = set()
+        upstream_pairs: set[tuple[str, str]] = set()
+        for row in rows:
+            alias = row.get("alias")
+            provider = row.get("provider")
+            provider_model = row.get("provider_model")
+            if alias:
+                aliases.add(alias)
+            if provider and provider_model:
+                upstream_pairs.add((provider, provider_model))
+        return aliases, upstream_pairs
+
+    def _select_stage_model(
+        self,
+        db: object,
+        run_id: str,
+        role_order: list[str],
+        *,
+        avoid_aliases: Optional[set[str]] = None,
+    ) -> Optional[dict]:
+        """Select a healthy model for a later council stage.
+
+        Stage orchestration must not keep routing expensive downstream work to an
+        upstream alias/pair that already failed earlier in the same run.  Prefer
+        models whose role_bias matches the stage, but fall back to any enabled
+        model that has not failed for this run.
+        """
+        avoid_aliases = avoid_aliases or set()
+        failed_aliases, failed_pairs = self._failed_model_identities(db, run_id)
+
+        def usable(model: dict) -> bool:
+            alias = model.get("alias", "")
+            pair = (model.get("provider", ""), model.get("provider_model", ""))
+            return alias not in avoid_aliases and alias not in failed_aliases and pair not in failed_pairs
+
+        enabled = [m for m in self._catalog.enabled_models() if usable(m)]
+        for role in role_order:
+            for model in enabled:
+                if model.get("role_bias") == role:
+                    return model
+        return enabled[0] if enabled else None
+
+    def _emit_stage_started(self, db: object, run_id: str, stage: str, models: list[str] = None) -> None:
+        update_run_status(
+            db,
+            run_id,
+            "running",
+            current_stage=stage,
+            current_stage_message=f"Running {stage.replace('_', ' ')}",
+        )
+        emit_stage_started(db, run_id, stage, models or [])
+
+    def _record_stage_candidate_result(
+        self,
+        db: object,
+        run_id: str,
+        cand_id: str,
+        model: dict,
+        stage: str,
+        provider_result,
+    ) -> Optional[dict]:
+        """Persist success or failure for a non-first-opinion stage call."""
+        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
+        status = "succeeded" if success else "failed"
+        insert_candidate(
+            db, run_id, cand_id, model["alias"], model["provider"],
+            model["provider_model"], stage, status, utc_now_iso(),
+        )
+        if success:
+            update_candidate_result(
+                db, cand_id, "succeeded", normalized_answer=raw_text,
+                latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok,
+            )
+            emit_candidate_completed(db, run_id, cand_id, model["alias"], stage)
+            return get_candidate(db, cand_id) or {}
+        update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
+        emit_candidate_failed(db, run_id, cand_id, model["alias"], stage, err_msg or err_code or "provider failed")
+        return None
+
     def _try_fallback(self, db: object, run: dict, failed_alias: str) -> Optional[dict]:
         """Try to promote a fallback model for a failed primary.
 
@@ -410,7 +500,7 @@ class Worker:
             await self._finalize_degraded(db, run_id, "fusion", degradation, best_text)
             return
 
-        emit_stage_started(db, run_id, "synthesis", [])
+        self._emit_stage_started(db, run_id, "synthesis", [])
         synth_models = select_models_for_mode("fusion", self._catalog)
         synth_model = synth_models[0] if synth_models else models[0]
         synthesis_prompt = build_fusion_prompt(run["prompt"], succeeded)
@@ -445,7 +535,7 @@ class Worker:
             await self._finalize_degraded(db, run_id, "fusion", degradation, synthesis_text, confidence=0.5)
             return
 
-        emit_stage_started(db, run_id, "verification", [])
+        self._emit_stage_started(db, run_id, "verification", [])
         verification_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         verif_models = select_models_for_mode("fusion", self._catalog)
         verif_model = verif_models[1] if len(verif_models) > 1 else models[0]
@@ -496,7 +586,7 @@ class Worker:
         deadline_s = run["deadline_seconds"]
 
         # Stage 1: first opinions (all models in parallel)
-        emit_stage_started(db, run_id, "first_opinion", [m["alias"] for m in models])
+        self._emit_stage_started(db, run_id, "first_opinion", [m["alias"] for m in models])
 
         sem = asyncio.Semaphore(3)
         async def call_model(model):
@@ -581,35 +671,45 @@ class Worker:
         degradation = self._check_deadline(run)
         if degradation and "skip_peer" in (degradation or ""):
             # Skip peer reviews and debate, go straight to synthesis
-            emit_stage_started(db, run_id, "synthesis", [])
+            self._emit_stage_started(db, run_id, "synthesis", [])
             synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None)
-            synth_model = models[0]
-            request = ProviderGenerateRequest(
-                alias=synth_model["alias"], provider=synth_model["provider"],
-                provider_model=synth_model["provider_model"],
-                system_prompt=None, user_prompt=synth_prompt,
-                max_output_tokens=run["max_output_tokens"], temperature=0.2,
+            synth_model = self._select_stage_model(
+                db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
             )
-            cand_id = new_candidate_id()
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
-            if success:
-                insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
-                                 synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                        latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-                emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
-                synthesis_text = raw_text
-            else:
+            if synth_model is None:
                 best = select_best_candidate(succeeded_opinions)
                 synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
+            else:
+                request = ProviderGenerateRequest(
+                    alias=synth_model["alias"], provider=synth_model["provider"],
+                    provider_model=synth_model["provider_model"],
+                    system_prompt=None, user_prompt=synth_prompt,
+                    max_output_tokens=run["max_output_tokens"], temperature=0.2,
+                )
+                cand_id = new_candidate_id()
+                provider_result = await self._call_provider_async(request, db, run_id)
+                candidate = self._record_stage_candidate_result(db, run_id, cand_id, synth_model, "synthesis", provider_result)
+                if candidate:
+                    synthesis_text = candidate.get("normalized_answer", "")
+                else:
+                    best = select_best_candidate(succeeded_opinions)
+                    synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
             await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text)
             return
 
         # Stage 2: peer reviews
-        emit_stage_started(db, run_id, "peer_review", [])
+        self._emit_stage_started(db, run_id, "peer_review", [])
         review_tasks = []
         for opinion_cand in succeeded_opinions:
-            reviewer = models[0]  # Use first model as reviewer (simplified)
+            reviewer = self._select_stage_model(
+                db,
+                run_id,
+                ["reviewer", "backup", "verification", "synthesis", "primary", "creative"],
+                avoid_aliases={opinion_cand.get("alias", "")},
+            )
+            if reviewer is None:
+                logger.warning("No healthy peer-review model available; skipping review", run_id=run_id)
+                continue
             review_prompt = build_peer_review_prompt(run["prompt"], opinion_cand.get("normalized_answer", ""), reviewer["alias"])
             request = ProviderGenerateRequest(
                 alias=reviewer["alias"], provider=reviewer["provider"],
@@ -623,24 +723,15 @@ class Worker:
             async with sem:
                 return model, await self._call_provider_async(req, db, run_id)
 
-        review_results = await asyncio.gather(*[call_review(m, r) for m, r in review_tasks])
+        review_results = await asyncio.gather(*[call_review(m, r) for m, r in review_tasks]) if review_tasks else []
 
         peer_reviews = []
         for (model, request), result in zip(review_tasks, review_results):
             _m, provider_result = result
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
-            if success:
-                insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
-                                 model["provider_model"], "peer_review", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                        latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-                emit_candidate_completed(db, run_id, cand_id, model["alias"], "peer_review")
-                peer_reviews.append(get_candidate(db, cand_id) or {})
-            else:
-                insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
-                                 model["provider_model"], "peer_review", "failed", utc_now_iso())
-                update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
+            candidate = self._record_stage_candidate_result(db, run_id, cand_id, model, "peer_review", provider_result)
+            if candidate:
+                peer_reviews.append(candidate)
 
         # Stage 3: debate (conditionally)
         # Deadline check — skip debate if under deadline pressure
@@ -654,51 +745,51 @@ class Worker:
             debate_triggered = agreement < 0.55
 
         if debate_triggered:
-            emit_stage_started(db, run_id, "debate", [])
+            self._emit_stage_started(db, run_id, "debate", [])
             debate_prompt = build_debate_prompt(run["prompt"], succeeded_opinions)
-            debate_model = models[0]
+            debate_model = self._select_stage_model(
+                db, run_id, ["creative", "backup", "reviewer", "primary", "synthesis", "verification"]
+            )
+            if debate_model is None:
+                logger.warning("No healthy debate model available; skipping debate", run_id=run_id)
+            else:
+                request = ProviderGenerateRequest(
+                    alias=debate_model["alias"], provider=debate_model["provider"],
+                    provider_model=debate_model["provider_model"],
+                    system_prompt=None, user_prompt=debate_prompt,
+                    max_output_tokens=run["max_output_tokens"], temperature=0.2,
+                )
+                cand_id = new_candidate_id()
+                provider_result = await self._call_provider_async(request, db, run_id)
+                candidate = self._record_stage_candidate_result(db, run_id, cand_id, debate_model, "debate", provider_result)
+                if candidate:
+                    debate_cands.append(candidate)
+
+        # Stage 4: synthesis
+        self._emit_stage_started(db, run_id, "synthesis", [])
+        synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, peer_reviews, debate_cands if debate_cands else None)
+        synth_model = self._select_stage_model(
+            db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
+        )
+        if synth_model is None:
+            logger.warning("No healthy synthesis model available; returning best council opinion", run_id=run_id)
+            best = select_best_candidate(succeeded_opinions)
+            synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
+        else:
             request = ProviderGenerateRequest(
-                alias=debate_model["alias"], provider=debate_model["provider"],
-                provider_model=debate_model["provider_model"],
-                system_prompt=None, user_prompt=debate_prompt,
+                alias=synth_model["alias"], provider=synth_model["provider"],
+                provider_model=synth_model["provider_model"],
+                system_prompt=None, user_prompt=synth_prompt,
                 max_output_tokens=run["max_output_tokens"], temperature=0.2,
             )
             cand_id = new_candidate_id()
-            success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
-            if success:
-                insert_candidate(db, run_id, cand_id, debate_model["alias"], debate_model["provider"],
-                                 debate_model["provider_model"], "debate", "succeeded", utc_now_iso())
-                update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                        latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-                emit_candidate_completed(db, run_id, cand_id, debate_model["alias"], "debate")
-                debate_cands.append(get_candidate(db, cand_id) or {})
+            provider_result = await self._call_provider_async(request, db, run_id)
+            candidate = self._record_stage_candidate_result(db, run_id, cand_id, synth_model, "synthesis", provider_result)
+            if candidate:
+                synthesis_text = candidate.get("normalized_answer", "")
             else:
-                insert_candidate(db, run_id, cand_id, debate_model["alias"], debate_model["provider"],
-                                 debate_model["provider_model"], "debate", "failed", utc_now_iso())
-                update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
-
-        # Stage 4: synthesis
-        emit_stage_started(db, run_id, "synthesis", [])
-        synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, peer_reviews, debate_cands if debate_cands else None)
-        synth_model = models[0]
-        request = ProviderGenerateRequest(
-            alias=synth_model["alias"], provider=synth_model["provider"],
-            provider_model=synth_model["provider_model"],
-            system_prompt=None, user_prompt=synth_prompt,
-            max_output_tokens=run["max_output_tokens"], temperature=0.2,
-        )
-        cand_id = new_candidate_id()
-        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
-        if success:
-            insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
-                             synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                    latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-            emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
-            synthesis_text = raw_text
-        else:
-            best = select_best_candidate(succeeded_opinions)
-            synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
+                best = select_best_candidate(succeeded_opinions)
+                synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
 
         # Stage 5: verification
         # Deadline check — skip verification if deadline imminent
@@ -707,36 +798,52 @@ class Worker:
             await self._finalize_degraded(db, run_id, "council", degradation, synthesis_text, confidence=0.5)
             return
 
-        emit_stage_started(db, run_id, "verification", [])
+        self._emit_stage_started(db, run_id, "verification", [])
         verif_prompt = build_verification_prompt(run["prompt"], synthesis_text)
-        verif_model = models[1] if len(models) > 1 else models[0]
-        request = ProviderGenerateRequest(
-            alias=verif_model["alias"], provider=verif_model["provider"],
-            provider_model=verif_model["provider_model"],
-            system_prompt=None, user_prompt=verif_prompt,
-            max_output_tokens=500, temperature=0.1,
+        verif_model = self._select_stage_model(
+            db, run_id, ["verification", "reviewer", "backup", "synthesis", "primary", "creative"]
         )
-        cand_id = new_candidate_id()
         confidence = 0.5
-        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
-        if success:
-            insert_candidate(db, run_id, cand_id, verif_model["alias"], verif_model["provider"],
-                             verif_model["provider_model"], "verification", "succeeded", utc_now_iso())
-            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                    latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-            try:
-                v_data = json.loads(raw_text)
-                confidence = v_data.get("confidence", 0.5)
-                if v_data.get("verdict") == "abstain":
-                    synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
-            except Exception:
-                pass
+        if verif_model is None:
+            logger.warning("No healthy verification model available; completing without verification", run_id=run_id)
+        else:
+            request = ProviderGenerateRequest(
+                alias=verif_model["alias"], provider=verif_model["provider"],
+                provider_model=verif_model["provider_model"],
+                system_prompt=None, user_prompt=verif_prompt,
+                max_output_tokens=500, temperature=0.1,
+            )
+            cand_id = new_candidate_id()
+            provider_result = await self._call_provider_async(request, db, run_id)
+            candidate = self._record_stage_candidate_result(db, run_id, cand_id, verif_model, "verification", provider_result)
+            if candidate:
+                raw_text = candidate.get("normalized_answer", "")
+                try:
+                    v_data = json.loads(raw_text)
+                    confidence = v_data.get("confidence", 0.5)
+                    if v_data.get("verdict") == "abstain":
+                        synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
+                except Exception:
+                    pass
 
         execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
                     {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})
         commit_tx(db)
         emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
-        update_run_status(db, run_id, "succeeded", final_answer=synthesis_text, final_confidence=confidence)
+        terminal_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'succeeded'", {"run_id": run_id}))
+        failed_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'failed'", {"run_id": run_id}))
+        update_run_status(
+            db,
+            run_id,
+            "succeeded",
+            final_answer=synthesis_text,
+            final_confidence=confidence,
+            current_stage="completed",
+            current_stage_message="Run completed",
+            progress_percent=100.0,
+            models_completed=terminal_count,
+            models_failed=failed_count,
+        )
 
     async def _fail_run(self, db: object, run_id: str, error_code: str, error_message: str) -> None:
         execute_sql(db, "UPDATE runs SET status='failed', error_code=:error_code, error_message=:error_message, finished_at=:now WHERE run_id=:run_id",
