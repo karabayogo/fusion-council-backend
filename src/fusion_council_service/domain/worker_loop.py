@@ -427,6 +427,9 @@ class Worker:
             if success:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "generation", "succeeded", utc_now_iso())
+                update_health_for_candidate(
+                    db, model["provider"], model["provider_model"], True, float(lat_ms) if lat_ms else None,
+                )
                 update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "generation")
@@ -434,6 +437,9 @@ class Worker:
             else:
                 insert_candidate(db, run_id, cand_id, model["alias"], model["provider"],
                                  model["provider_model"], "generation", "failed", utc_now_iso())
+                update_health_for_candidate(
+                    db, model["provider"], model["provider_model"], False, float(lat_ms) if lat_ms else None,
+                )
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
                 emit_candidate_failed(db, run_id, cand_id, model["alias"], "generation", err_msg or err_code)
 
@@ -466,6 +472,9 @@ class Worker:
                     if fb_success:
                         insert_candidate(db, run_id, cand_id, fallback["alias"], fallback["provider"],
                                          fallback["provider_model"], "generation", "succeeded", utc_now_iso())
+                        update_health_for_candidate(
+                            db, fallback["provider"], fallback["provider_model"], True, float(fb_lat) if fb_lat else None,
+                        )
                         update_candidate_result(db, cand_id, "succeeded", normalized_answer=fb_text,
                                                 latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                         emit_candidate_completed(db, run_id, cand_id, fallback["alias"], "generation")
@@ -508,6 +517,9 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                              synth_model["provider_model"], "synthesis", "succeeded", utc_now_iso())
+            update_health_for_candidate(
+                db, synth_model["provider"], synth_model["provider_model"], True, float(lat_ms) if lat_ms else None,
+            )
             update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             emit_candidate_completed(db, run_id, cand_id, synth_model["alias"], "synthesis")
@@ -515,6 +527,9 @@ class Worker:
         else:
             insert_candidate(db, run_id, cand_id, synth_model["alias"], synth_model["provider"],
                              synth_model["provider_model"], "synthesis", "failed", utc_now_iso())
+            update_health_for_candidate(
+                db, synth_model["provider"], synth_model["provider_model"], False, float(lat_ms) if lat_ms else None,
+            )
             update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
             synthesis_text = succeeded[0].get("normalized_answer", "") if succeeded else "No answer available."
 
@@ -541,6 +556,9 @@ class Worker:
         if success:
             insert_candidate(db, run_id, cand_id, verif_model["alias"], verif_model["provider"],
                              verif_model["provider_model"], "verification", "succeeded", utc_now_iso())
+            update_health_for_candidate(
+                db, verif_model["provider"], verif_model["provider_model"], True, float(lat_ms) if lat_ms else None,
+            )
             update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                     latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
             # Parse verification verdict

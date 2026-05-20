@@ -221,6 +221,22 @@ def get_health_scores(db: object) -> dict[tuple[str, str], float]:
     return scores
 
 
+def get_health_latencies(db: object) -> dict[tuple[str, str], float | None]:
+    """Return a dict mapping (provider, provider_model) -> avg_latency_ms (EMA smoothed)."""
+    rows = execute_sql_all(
+        db,
+        "SELECT provider, provider_model, avg_latency_ms FROM provider_health",
+    )
+    latencies: dict[tuple[str, str], float | None] = {}
+    for row in rows:
+        provider = row.get("provider")
+        provider_model = row.get("provider_model")
+        if provider and provider_model:
+            lat = row.get("avg_latency_ms")
+            latencies[(provider, provider_model)] = float(lat) if lat is not None else None
+    return latencies
+
+
 def update_health_for_candidate(
     db: object,
     provider: str,
