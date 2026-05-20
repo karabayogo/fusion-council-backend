@@ -85,3 +85,54 @@ def test_terminal_run_metrics_are_idempotent(tmp_db):
     rendered = metrics.render_prometheus()
     assert "council_answers_candidate_count_count 1" in rendered
     assert "council_runs_terminal_without_candidates_total 1" in rendered
+
+
+def test_answers_payload_records_duplicate_failed_upstream_reuse_metric():
+    metrics.reset_metrics()
+    candidates = [
+        {
+            "stage": "first_opinion",
+            "alias": "primary-a",
+            "provider": "opencode_go",
+            "provider_model": "deepseek-v4-pro",
+            "status": "failed",
+        },
+        {
+            "stage": "peer_review",
+            "alias": "reviewer-alias-same-upstream",
+            "provider": "opencode_go",
+            "provider_model": "deepseek-v4-pro",
+            "status": "succeeded",
+        },
+    ]
+
+    metrics.observe_answers_payload_once("run_duplicate_upstream", candidates)
+
+    rendered = metrics.render_prometheus()
+    assert 'council_failed_upstream_reuse_total{stage="peer_review"} 1' in rendered
+
+
+def test_answers_payload_duplicate_failed_upstream_reuse_metric_is_idempotent():
+    metrics.reset_metrics()
+    candidates = [
+        {
+            "stage": "first_opinion",
+            "alias": "primary-a",
+            "provider": "opencode_go",
+            "provider_model": "deepseek-v4-pro",
+            "status": "failed",
+        },
+        {
+            "stage": "debate",
+            "alias": "debate-alias-same-upstream",
+            "provider": "opencode_go",
+            "provider_model": "deepseek-v4-pro",
+            "status": "failed",
+        },
+    ]
+
+    metrics.observe_answers_payload_once("run_duplicate_upstream", candidates)
+    metrics.observe_answers_payload_once("run_duplicate_upstream", candidates)
+
+    rendered = metrics.render_prometheus()
+    assert 'council_failed_upstream_reuse_total{stage="debate"} 1' in rendered

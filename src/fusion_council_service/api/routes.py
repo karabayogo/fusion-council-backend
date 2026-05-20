@@ -113,6 +113,13 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> l
     """Build orchestration-stage summaries without creating fake candidate rows."""
     by_stage: dict[str, dict] = {}
 
+    def append_model(summary: dict, alias: str | None) -> None:
+        if not alias:
+            return
+        models = summary.setdefault("models", [])
+        if alias not in models:
+            models.append(alias)
+
     for event in events:
         payload = _parse_event_payload(event)
         stage = payload.get("stage")
@@ -128,7 +135,8 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> l
         if event.get("event_type") == "stage.started":
             summary["status"] = "started"
             summary["started_at"] = summary.get("started_at") or event.get("created_at")
-            summary["models"] = payload.get("models") or summary.get("models") or []
+            for alias in payload.get("models") or []:
+                append_model(summary, alias)
 
     for candidate in candidates:
         stage = candidate.get("stage")
@@ -142,6 +150,7 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict]) -> l
             "started_at": candidate.get("created_at"),
         })
         summary["candidate_count"] = int(summary.get("candidate_count") or 0) + 1
+        append_model(summary, candidate.get("alias"))
         if candidate.get("status") == "failed" and summary.get("status") != "completed":
             summary["status"] = "failed"
         else:
