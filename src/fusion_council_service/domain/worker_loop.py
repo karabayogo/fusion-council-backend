@@ -281,6 +281,11 @@ class Worker:
         Wraps the blocking call with a timeout. If the provider call exceeds
         timeout_seconds, returns a failed ProviderGenerateResult with
         error_code='PROVIDER_TIMEOUT'.
+
+        Non-timeout failures (HTTP 4xx/5xx, auth errors, network errors) are
+        classified by the provider and returned with their real error code
+        (e.g. HTTP_500, AUTH_FAILED). The "Provider call timed out" log message
+        only appears for actual asyncio.TimeoutError — not for HTTP errors.
         """
         loop = asyncio.get_event_loop()
         coro = loop.run_in_executor(

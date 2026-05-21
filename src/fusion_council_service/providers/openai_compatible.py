@@ -51,6 +51,19 @@ class OpenAICompatibleProvider:
                     output_tokens=None,
                 )
 
+            # Explicitly classify 4xx/5xx before raise_for_status swallows them
+            if response.status_code >= 400:
+                body = response.text[:500] if response.text else "(empty)"
+                return ProviderGenerateResult(
+                    success=False,
+                    raw_text=None,
+                    error_code=f"HTTP_{response.status_code}",
+                    error_message=f"Provider returned {response.status_code}: {body}",
+                    latency_ms=latency_ms,
+                    input_tokens=None,
+                    output_tokens=None,
+                )
+
             response.raise_for_status()
             data = response.json()
 
