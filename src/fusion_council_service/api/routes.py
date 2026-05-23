@@ -102,7 +102,9 @@ def _candidate_contract(candidate: dict, fallback_order: int) -> dict:
     row = dict(candidate)
     execution_order = row.get("execution_order") or fallback_order
     row["execution_order"] = execution_order
-    row["raw_text"] = row.get("normalized_answer")
+    normalized = row.get("normalized_answer")
+    row["raw_text"]   = normalized
+    row["raw_answer"] = normalized   # contract: raw_text and raw_answer are aliases
     return row
 
 
