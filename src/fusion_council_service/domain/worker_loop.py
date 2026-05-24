@@ -1,7 +1,6 @@
 """Fusion Council worker — polls DB, claims runs, executes model orchestration."""
 
 import asyncio
-import json
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
