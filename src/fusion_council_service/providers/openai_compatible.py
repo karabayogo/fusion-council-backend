@@ -29,6 +29,18 @@ class OpenAICompatibleProvider:
                 "max_tokens": request.max_output_tokens,
             }
 
+            if request.response_format:
+                payload["response_format"] = request.response_format
+            elif request.json_schema:
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "structured_response",
+                        "strict": True,
+                        "schema": request.json_schema,
+                    },
+                }
+
             response = httpx.post(
                 f"{self._base_url}/chat/completions",
                 json=payload,

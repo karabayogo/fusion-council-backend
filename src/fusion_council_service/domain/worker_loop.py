@@ -7,10 +7,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from pydantic import BaseModel
+
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import new_session, initialize_schema, execute_sql, execute_sql_all, commit_tx
 from fusion_council_service.domain.budget import compute_budget, should_degrade, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import get_candidate, insert_candidate, update_candidate_result
+from fusion_council_service.domain.decision_log import get_memory_context, log_pending_decision
 from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
@@ -22,6 +25,7 @@ from fusion_council_service.domain.scoring import (
     build_peer_review_prompt, build_verification_prompt, compute_pairwise_agreement,
     select_best_candidate,
 )
+from fusion_council_service.domain.structured_output import invoke_structured_or_freetext
 from fusion_council_service.domain.types import ProviderGenerateRequest, ProviderGenerateResult
 from fusion_council_service.ids import new_candidate_id
 from fusion_council_service.logging_utils import get_logger
@@ -34,6 +38,11 @@ logger = get_logger("fusion_council_service.worker_loop")
 _executor = ThreadPoolExecutor(max_workers=10)
 
 
+class _VerificationPayload(BaseModel):
+    verdict: str
+    confidence: float
+
+
 def _run_provider_sync(
     registry: ProviderRegistry,
     request,
@@ -42,6 +51,14 @@ def _run_provider_sync(
     result = registry.generate(request)
     return (result.success, result.raw_text, result.error_code, result.error_message,
             result.latency_ms, result.input_tokens, result.output_tokens)
+
+
+def _safe_log_pending_decision(db, run: dict, mode: str, final_answer: str) -> None:
+    """Best-effort decision logging; never break successful run completion."""
+    try:
+        log_pending_decision(db, run["run_id"], run["prompt"], mode, final_answer)
+    except Exception as exc:
+        logger.warning(f"decision_log write skipped: {exc}", run_id=run.get("run_id"))
 
 
 class Worker:
@@ -308,6 +325,84 @@ class Worker:
                 output_tokens=None,
             )
 
+    async def _call_structured_provider_async(
+        self,
+        request: ProviderGenerateRequest,
+        response_model: type[BaseModel],
+        db: object,
+        run_id: str,
+        timeout_seconds: int = 300,
+        max_retries: int = 2,
+    ) -> ProviderGenerateResult:
+        """Call provider with structured-output fallback utility in thread pool."""
+        loop = asyncio.get_event_loop()
+
+        def _invoke() -> ProviderGenerateResult:
+            return invoke_structured_or_freetext(
+                request=request,
+                registry=self._registry,
+                response_model=response_model,
+                max_retries=max_retries,
+            )
+
+        try:
+            result = await asyncio.wait_for(loop.run_in_executor(_executor, _invoke), timeout=timeout_seconds)
+            if isinstance(result, ProviderGenerateResult):
+                return result
+            if isinstance(result, (tuple, list)) and len(result) == 7:
+                return ProviderGenerateResult(
+                    success=bool(result[0]),
+                    raw_text=result[1],
+                    error_code=result[2],
+                    error_message=result[3],
+                    latency_ms=int(result[4] or 0),
+                    input_tokens=result[5],
+                    output_tokens=result[6],
+                )
+            # Compatibility fallback for mock-heavy tests and any provider that
+            # returns an unexpected shape under structured invocation.
+            logger.warning(
+                "Structured provider returned unexpected result type; falling back to legacy provider path",
+                run_id=run_id,
+                result_type=type(result).__name__,
+            )
+            legacy = await self._call_provider_async(request, db, run_id, timeout_seconds=timeout_seconds)
+            if isinstance(legacy, ProviderGenerateResult):
+                return legacy
+            if isinstance(legacy, (tuple, list)) and len(legacy) == 7:
+                return ProviderGenerateResult(
+                    success=bool(legacy[0]),
+                    raw_text=legacy[1],
+                    error_code=legacy[2],
+                    error_message=legacy[3],
+                    latency_ms=int(legacy[4] or 0),
+                    input_tokens=legacy[5],
+                    output_tokens=legacy[6],
+                )
+            return ProviderGenerateResult(
+                success=False,
+                raw_text=None,
+                error_code="PROVIDER_RESULT_INVALID",
+                error_message=f"Unexpected provider result type: {type(legacy).__name__}",
+                latency_ms=0,
+                input_tokens=None,
+                output_tokens=None,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Structured provider call timed out after {timeout_seconds}s for {request.alias}",
+                run_id=run_id,
+            )
+            return ProviderGenerateResult(
+                success=False,
+                raw_text=None,
+                error_code="PROVIDER_TIMEOUT",
+                error_message=f"Provider call timed out after {timeout_seconds}s",
+                latency_ms=timeout_seconds * 1000,
+                input_tokens=None,
+                output_tokens=None,
+            )
+
     async def _run_single(self, db: object, run: dict) -> None:
         """Execute a single-mode run."""
 
@@ -350,6 +445,7 @@ class Worker:
             )
             commit_tx(db)
             emit_run_completed(db, run_id, raw_text)
+            _safe_log_pending_decision(db, run, "single", raw_text)
             update_run_status(db, run_id, "succeeded")
         else:
             insert_candidate(db, run_id, candidate_id, model["alias"], model["provider"],
@@ -382,6 +478,7 @@ class Worker:
                     )
                     commit_tx(db)
                     emit_run_completed(db, run_id, fb_txt)
+                    _safe_log_pending_decision(db, run, "single", fb_txt)
                     update_run_status(db, run_id, "succeeded")
                     return
             await self._fail_run(db, run_id, err_code or "PROVIDER_FAILED", err_msg or "Single model failed")
@@ -508,7 +605,8 @@ class Worker:
         self._emit_stage_started(db, run_id, "synthesis", [])
         synth_models = select_models_for_mode("fusion", self._catalog)
         synth_model = synth_models[0] if synth_models else models[0]
-        synthesis_prompt = build_fusion_prompt(run["prompt"], succeeded)
+        memory_context = get_memory_context(db, run["prompt"], "fusion", n_same=3, n_cross=2)
+        synthesis_prompt = build_fusion_prompt(run["prompt"], succeeded, memory_context=memory_context)
         request = ProviderGenerateRequest(
             alias=synth_model["alias"], provider=synth_model["provider"],
             provider_model=synth_model["provider_model"],
@@ -557,33 +655,32 @@ class Worker:
             max_output_tokens=500, temperature=0.1,
         )
         cand_id = new_candidate_id()
-        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
-        if success:
-            insert_candidate(db, run_id, cand_id, verif_model["alias"], verif_model["provider"],
-                             verif_model["provider_model"], "verification", "succeeded", utc_now_iso())
-            update_health_for_candidate(
-                db, verif_model["provider"], verif_model["provider_model"], True, float(lat_ms) if lat_ms else None,
-            )
-            update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
-                                    latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
-            # Parse verification verdict
-            confidence = 0.5
+        confidence = 0.5
+        final_answer = synthesis_text
+        provider_result = await self._call_structured_provider_async(
+            request,
+            _VerificationPayload,
+            db,
+            run_id,
+        )
+        candidate = self._record_stage_candidate_result(
+            db, run_id, cand_id, verif_model, "verification", provider_result
+        )
+        if candidate:
+            raw_text = candidate.get("normalized_answer", "")
             try:
-                v_data = json.loads(raw_text)
-                confidence = v_data.get("confidence", 0.5)
-                if v_data.get("verdict") == "abstain":
+                parsed = _VerificationPayload.model_validate_json(raw_text)
+                confidence = float(parsed.confidence)
+                if parsed.verdict.strip().lower() == "abstain":
                     final_answer = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
-                else:
-                    final_answer = synthesis_text
             except Exception:
-                final_answer = synthesis_text
-        else:
-            final_answer = synthesis_text  # Fallback if verification fails
+                pass
 
         execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
                     {"now": utc_now_iso(), "final_answer": final_answer, "confidence": confidence, "run_id": run_id})
         commit_tx(db)
         emit_run_completed(db, run_id, final_answer, confidence=confidence)
+        _safe_log_pending_decision(db, run, "fusion", final_answer)
         update_run_status(db, run_id, "succeeded", final_answer=final_answer, final_confidence=confidence)
 
     async def _run_council(self, db: object, run: dict) -> None:
@@ -698,7 +795,8 @@ class Worker:
                 db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
             )
             self._emit_stage_started(db, run_id, "synthesis", [synth_model["alias"]] if synth_model else [])
-            synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None)
+            memory_context = get_memory_context(db, run["prompt"], "council", n_same=3, n_cross=2)
+            synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, [], None, memory_context=memory_context)
             if synth_model is None:
                 best = select_best_candidate(succeeded_opinions)
                 synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
@@ -797,7 +895,12 @@ class Worker:
             db, run_id, ["synthesis", "backup", "reviewer", "primary", "creative", "verification"]
         )
         self._emit_stage_started(db, run_id, "synthesis", [synth_model["alias"]] if synth_model else [])
-        synth_prompt = build_council_synthesis_prompt(run["prompt"], succeeded_opinions, peer_reviews, debate_cands if debate_cands else None)
+        memory_context = get_memory_context(db, run["prompt"], "council", n_same=3, n_cross=2)
+        synth_prompt = build_council_synthesis_prompt(
+            run["prompt"], succeeded_opinions, peer_reviews,
+            debate_cands if debate_cands else None,
+            memory_context=memory_context,
+        )
         if synth_model is None:
             logger.warning("No healthy synthesis model available; returning best council opinion", run_id=run_id)
             best = select_best_candidate(succeeded_opinions)
@@ -841,14 +944,19 @@ class Worker:
                 max_output_tokens=500, temperature=0.1,
             )
             cand_id = new_candidate_id()
-            provider_result = await self._call_provider_async(request, db, run_id)
+            provider_result = await self._call_structured_provider_async(
+                request,
+                _VerificationPayload,
+                db,
+                run_id,
+            )
             candidate = self._record_stage_candidate_result(db, run_id, cand_id, verif_model, "verification", provider_result)
             if candidate:
                 raw_text = candidate.get("normalized_answer", "")
                 try:
-                    v_data = json.loads(raw_text)
-                    confidence = v_data.get("confidence", 0.5)
-                    if v_data.get("verdict") == "abstain":
+                    parsed = _VerificationPayload.model_validate_json(raw_text)
+                    confidence = float(parsed.confidence)
+                    if parsed.verdict.strip().lower() == "abstain":
                         synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
                 except Exception:
                     pass
@@ -857,6 +965,7 @@ class Worker:
                     {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})
         commit_tx(db)
         emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
+        _safe_log_pending_decision(db, run, "council", synthesis_text)
         terminal_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'succeeded'", {"run_id": run_id}))
         failed_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'failed'", {"run_id": run_id}))
         update_run_status(

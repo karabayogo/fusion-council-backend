@@ -1,7 +1,7 @@
 """Shared types for provider clients and domain logic."""
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -18,6 +18,9 @@ class ProviderGenerateRequest:
     user_prompt: str
     max_output_tokens: int    # default 3000
     temperature: float        # default 0.2
+    # Optional structured-output hints. Providers that don't support them can ignore.
+    json_schema: Optional[dict] = None
+    response_format: Optional[dict] = None
 
 
 @dataclass

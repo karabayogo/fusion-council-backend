@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     SYNC_TIMEOUT_SECONDS: int = 120
     SSE_POLL_INTERVAL_MS: int = 500
     MODEL_CATALOG_PATH: str = "./config/models.yaml"
+    DECISION_LOG_MAX_ENTRIES: int = 500
+    REFLECTION_ROLE_ALIAS: str = "minimax/MiniMax-M2.7"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

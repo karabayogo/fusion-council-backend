@@ -57,11 +57,16 @@ def select_best_candidate(candidates: list[dict]) -> Optional[dict]:
     return succeeded[0]
 
 
-def build_fusion_prompt(prompt: str, candidates: list[dict]) -> str:
+def build_fusion_prompt(prompt: str, candidates: list[dict], memory_context: str = "") -> str:
     """Build the synthesis prompt for fusion mode.
     Combines the original prompt with candidate answers.
     """
-    parts = [f"Original question: {prompt}\n"]
+    parts = []
+    if memory_context:
+        parts.append("## Past Council Lessons\n")
+        parts.append(memory_context)
+        parts.append("\n---\n")
+    parts.append(f"Original question: {prompt}\n")
     parts.append("Below are answers from multiple AI models:\n")
     for i, c in enumerate(candidates, 1):
         alias = c.get("alias", f"model-{i}")
@@ -82,9 +87,15 @@ def build_council_synthesis_prompt(
     first_opinions: list[dict],
     peer_reviews: list[dict],
     debate_candidates: Optional[list[dict]] = None,
+    memory_context: str = "",
 ) -> str:
     """Build the synthesis prompt for council mode."""
-    parts = [f"Original question: {prompt}\n"]
+    parts = []
+    if memory_context:
+        parts.append("## Past Council Lessons\n")
+        parts.append(memory_context)
+        parts.append("\n---\n")
+    parts.append(f"Original question: {prompt}\n")
 
     parts.append("## First Opinions\n")
     for i, c in enumerate(first_opinions, 1):

@@ -119,8 +119,8 @@ async def lifespan(app: FastAPI):
     _registry = build_provider_registry(_settings)
     logger.info("Provider registry built", event_type="providers.ready")
 
-    # Init API routes with DB
-    init_api(_settings)
+    # Init API routes with DB + provider registry reference
+    init_api(_settings, _registry)
 
     logger.info(f"Fusion Council Service ready — APP_ENV={_settings.APP_ENV}", event_type="app.ready")
 

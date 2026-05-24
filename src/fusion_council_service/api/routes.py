@@ -2,10 +2,11 @@
 
 import asyncio
 import json
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 from fusion_council_service.auth import extract_bearer, resolve_role
 from fusion_council_service.clock import utc_now_iso, utc_now_plus_seconds
@@ -14,21 +15,25 @@ from fusion_council_service.db import new_session, initialize_schema
 from fusion_council_service import metrics as app_metrics
 from fusion_council_service.domain.budget import resolve_deadline, select_models_for_mode
 from fusion_council_service.domain.candidate_repository import list_candidates_for_run
+from fusion_council_service.domain.decision_log import resolve_decision_outcome, rotate_decision_log
 from fusion_council_service.domain.event_emitter import emit_run_accepted
 from fusion_council_service.domain.event_repository import list_events_for_run
 from fusion_council_service.domain.model_selection import (
     get_health_scores, get_health_latencies,
 )
+from fusion_council_service.domain.reflection import generate_reflection
 from fusion_council_service.domain.run_repository import get_run, insert_run, list_runs, update_run_status
 from fusion_council_service.domain.types import RespondRequest, RunRequest, RunResponse
 from fusion_council_service.ids import new_run_id
 from fusion_council_service.logging_utils import get_logger
+from fusion_council_service.providers.registry import ProviderRegistry
 
 logger = get_logger("fusion_council_service.api")
 
 # Global db connection for API
 _api_db = None
 _settings: Optional[Settings] = None
+_registry: Optional[ProviderRegistry] = None
 
 
 def get_api_db():
@@ -41,9 +46,10 @@ def get_api_db():
     return _api_db
 
 
-def init_api(settings: Settings) -> None:
-    global _settings, _api_db
+def init_api(settings: Settings, registry: Optional[ProviderRegistry] = None) -> None:
+    global _settings, _api_db, _registry
     _settings = settings
+    _registry = registry
     _api_db = new_session()
     initialize_schema(_api_db)
     logger.info("API DB initialized")
@@ -53,6 +59,12 @@ def get_settings() -> Settings:
     if _settings is None:
         raise RuntimeError("Settings not initialized")
     return _settings
+
+
+def get_api_registry() -> ProviderRegistry:
+    if _registry is None:
+        raise RuntimeError("Provider registry not initialized")
+    return _registry
 
 
 def get_auth_dependency():
@@ -234,6 +246,24 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: 
 
 
 router = APIRouter()
+
+
+_DEFAULT_OUTCOME_RAW_BY_RATING = {
+    "helpful": 5.0,
+    "partial": 3.0,
+    "not_helpful": 1.0,
+}
+
+
+class OutcomeRequest(BaseModel):
+    rating: Literal["helpful", "not_helpful", "partial"]
+    outcome_raw: Optional[float] = Field(default=None, ge=1.0, le=5.0)
+
+
+class OutcomeResponse(BaseModel):
+    ok: bool
+    run_id: str
+    resolution: dict
 
 
 @router.post("/v1/runs", response_model=RunResponse)
@@ -444,6 +474,65 @@ async def list_runs_endpoint(
     db = get_api_db()
     runs = list_runs(db, limit=limit)
     return {"runs": runs, "count": len(runs)}
+
+
+@router.patch("/v1/runs/{run_id}/outcome", response_model=OutcomeResponse)
+async def submit_outcome(
+    run_id: str,
+    body: OutcomeRequest,
+    auth=Depends(get_auth_dependency()),
+):
+    """Resolve a pending decision with user outcome feedback and reflection."""
+    token, role = auth
+    _ = (token, role)
+    db = get_api_db()
+    settings = get_settings()
+
+    run = get_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if run.get("status") not in {"succeeded", "succeeded_degraded"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is not in a completable status for outcome submission",
+        )
+
+    outcome_raw = (
+        float(body.outcome_raw)
+        if body.outcome_raw is not None
+        else _DEFAULT_OUTCOME_RAW_BY_RATING[body.rating]
+    )
+
+    try:
+        registry = get_api_registry()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    def reflection_generator(*, prompt: str, final_answer: str, rating: str, outcome_raw: float) -> str:
+        return generate_reflection(
+            prompt=prompt,
+            final_answer=final_answer,
+            rating=rating,
+            outcome_raw=outcome_raw,
+            provider_registry=registry,
+            backup_role_alias=settings.REFLECTION_ROLE_ALIAS,
+        )
+
+    try:
+        resolution = resolve_decision_outcome(
+            db=db,
+            run_id=run_id,
+            rating=body.rating,
+            outcome_raw=outcome_raw,
+            generate_reflection_fn=reflection_generator,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    rotate_decision_log(db, max_resolved_entries=settings.DECISION_LOG_MAX_ENTRIES)
+
+    return OutcomeResponse(ok=True, run_id=run_id, resolution=resolution)
 
 
 @router.post("/v1/respond")

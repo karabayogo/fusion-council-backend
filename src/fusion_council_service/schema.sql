@@ -102,3 +102,19 @@ CREATE TABLE IF NOT EXISTS provider_health (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (provider, provider_model)
 );
+
+CREATE TABLE IF NOT EXISTS decision_log (
+  run_id TEXT PRIMARY KEY,
+  prompt_hash TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  final_answer TEXT NOT NULL,
+  rating TEXT,
+  outcome_raw REAL,
+  pending INTEGER NOT NULL DEFAULT 1,
+  reflection TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decision_log_pending ON decision_log(pending);
+CREATE INDEX IF NOT EXISTS idx_decision_log_prompt_hash ON decision_log(prompt_hash);
