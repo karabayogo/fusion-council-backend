@@ -21,6 +21,11 @@ class ProviderGenerateRequest:
     # Optional structured-output hints. Providers that don't support them can ignore.
     json_schema: Optional[dict] = None
     response_format: Optional[dict] = None
+    # Optional per-model call timeout in seconds.  When unset, the caller's
+    # default (typically 300s) is used.  This allows thinking models or slow
+    # providers to get more time than the hard-coded default without making
+    # the timeout a required parameter everywhere.
+    timeout_seconds: Optional[int] = None
 
 
 @dataclass

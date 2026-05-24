@@ -302,24 +302,29 @@ class Worker:
         classified by the provider and returned with their real error code
         (e.g. HTTP_500, AUTH_FAILED). The "Provider call timed out" log message
         only appears for actual asyncio.TimeoutError — not for HTTP errors.
+
+        The request.timeout_seconds field, when set, overrides timeout_seconds
+        for this specific model call (allows thinking models to get more time).
         """
         loop = asyncio.get_event_loop()
         coro = loop.run_in_executor(
             _executor, _run_provider_sync, self._registry, request,
         )
+        # Allow per-request timeout override (e.g. for thinking models)
+        effective_timeout = request.timeout_seconds if request.timeout_seconds else timeout_seconds
         try:
-            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+            return await asyncio.wait_for(coro, timeout=effective_timeout)
         except asyncio.TimeoutError:
             logger.warning(
-                f"Provider call timed out after {timeout_seconds}s for {request.alias}",
+                f"Provider call timed out after {effective_timeout}s for {request.alias}",
                 run_id=run_id,
             )
             return ProviderGenerateResult(
                 success=False,
                 raw_text=None,
                 error_code='PROVIDER_TIMEOUT',
-                error_message=f'Provider call timed out after {timeout_seconds}s',
-                latency_ms=timeout_seconds * 1000,
+                error_message=f'Provider call timed out after {effective_timeout}s',
+                latency_ms=effective_timeout * 1000,
                 input_tokens=None,
                 output_tokens=None,
             )
@@ -424,6 +429,7 @@ class Worker:
             user_prompt=run["prompt"],
             max_output_tokens=run["max_output_tokens"],
             temperature=run["temperature"],
+            timeout_seconds=model.get("timeout_seconds"),
         )
 
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
@@ -461,6 +467,7 @@ class Worker:
                     user_prompt=run["prompt"],
                     max_output_tokens=run["max_output_tokens"],
                     temperature=run["temperature"],
+                    timeout_seconds=fallback.get("timeout_seconds"),
                 )
                 fb_candidate_id = new_candidate_id()
                 fb_ok, fb_txt, fb_ec, fb_em, fb_lat, fb_in, fb_out = await self._call_provider_async(fallback_req, db, run_id)
@@ -510,6 +517,7 @@ class Worker:
                 user_prompt=run["prompt"],
                 max_output_tokens=run["max_output_tokens"],
                 temperature=run["temperature"],
+                timeout_seconds=model.get("timeout_seconds"),
             )
             pending_calls.append((model, request))
 
@@ -708,6 +716,7 @@ class Worker:
                     user_prompt=run["prompt"],
                     max_output_tokens=run["max_output_tokens"],
                     temperature=run["temperature"],
+                    timeout_seconds=model.get("timeout_seconds"),
                 )
                 return model, await self._call_provider_async(request, db, run_id)
 

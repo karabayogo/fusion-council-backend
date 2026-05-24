@@ -34,11 +34,6 @@ class MiniMaxTokenPlanProvider:
     def generate(self, request: ProviderGenerateRequest) -> ProviderGenerateResult:
         start = time.monotonic()
         try:
-# messages = []
-            if request.system_prompt:
-                # Anthropic SDK passes system as a separate param
-                pass
-
             # Enforce minimum max_tokens to leave room for text after thinking
             effective_max_tokens = max(request.max_output_tokens, MINIMAX_MIN_MAX_TOKENS)
 
@@ -51,31 +46,14 @@ class MiniMaxTokenPlanProvider:
             if request.system_prompt:
                 kwargs["system"] = request.system_prompt
 
-            response = self._client.messages.create(**kwargs)
+            response = self._stream_generate(kwargs)
             latency_ms = int((time.monotonic() - start) * 1000)
 
-            # Anthropic SDK may return ThinkingBlock + TextBlock; extract last TextBlock
-            text_blocks = [b for b in response.content if getattr(b, 'text', None) is not None]
-            raw_text = text_blocks[-1].text if text_blocks else ""
-
-            # If thinking consumed the entire budget (stop_reason=max_tokens, no text),
-            # retry once with double the max_tokens
-            if not raw_text and response.stop_reason == "max_tokens" and MAX_THINKING_RETRIES > 0:
-                logger.warning(
-                    f"MiniMax thinking consumed all {effective_max_tokens} tokens, "
-                    f"retrying with {effective_max_tokens * 2}"
-                )
-                kwargs["max_tokens"] = effective_max_tokens * 2
-                response = self._client.messages.create(**kwargs)
-                latency_ms = int((time.monotonic() - start) * 1000)
-                text_blocks = [b for b in response.content if getattr(b, 'text', None) is not None]
-                raw_text = text_blocks[-1].text if text_blocks else ""
-
-            input_tokens = response.usage.input_tokens if response.usage else None
-            output_tokens = response.usage.output_tokens if response.usage else None
+            input_tokens = response.get("input_tokens")
+            output_tokens = response.get("output_tokens")
 
             return ProviderGenerateResult(
-                success=True, raw_text=raw_text,
+                success=True, raw_text=response["text"],
                 error_code=None, error_message=None,
                 latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
             )
@@ -101,3 +79,67 @@ class MiniMaxTokenPlanProvider:
                 error_code="PROVIDER_ERROR", error_message=str(e),
                 latency_ms=latency_ms, input_tokens=None, output_tokens=None,
             )
+
+    def _stream_generate(self, kwargs: dict) -> dict:
+        """Execute a streaming Anthropic messages.stream() call and accumulate results.
+
+        MiniMax's API requires streaming for operations that may exceed 10 minutes.
+        We use the context-manager pattern to iterate events, extract text deltas,
+        and retrieve the final Message for usage stats and stop_reason.  If thinking
+        consumed the entire budget (stop_reason=max_tokens, no text), we retry once
+        with double max_tokens.
+        """
+        accumulated_text = []
+        input_tokens = None
+        output_tokens = None
+        stop_reason = None
+
+        with self._client.messages.stream(**kwargs) as stream:
+            for event in stream:
+                # MessageDeltaEvent carries usage stats (including output_tokens) and
+                # the final stop_reason when the stream completes
+                if hasattr(event, "type") and event.type == "message_delta":
+                    stop_reason = getattr(event.delta, "stop_reason", None)
+                    if event.usage:
+                        input_tokens = event.usage.input_tokens
+                        output_tokens = event.usage.output_tokens
+                # ContentBlockDeltaEvent carries incremental content deltas
+                elif hasattr(event, "type") and event.type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta is None:
+                        continue
+                    delta_type = getattr(delta, "type", None)
+                    if delta_type == "text_delta":
+                        text = getattr(delta, "text", "")
+                        if text:
+                            accumulated_text.append(text)
+                    elif delta_type == "thinking_delta":
+                        # Thinking blocks are internal; accumulate for potential logging
+                        thinking = getattr(delta, "thinking", "")
+                        if thinking:
+                            accumulated_text.append(f"[thinking: {thinking[:50]}...]")
+
+            # Retrieve the final parsed message to confirm stop_reason and content blocks
+            final_message = stream.get_final_message()
+            if final_message is not None:
+                stop_reason = final_message.stop_reason
+                if final_message.usage:
+                    input_tokens = final_message.usage.input_tokens
+                    output_tokens = final_message.usage.output_tokens
+
+        # If thinking consumed the entire budget (stop_reason=max_tokens, no text),
+        # retry once with double the max_tokens using streaming
+        text_so_far = "".join(accumulated_text)
+        if not text_so_far and stop_reason == "max_tokens" and MAX_THINKING_RETRIES > 0:
+            logger.warning(
+                f"MiniMax thinking consumed all {kwargs['max_tokens']} tokens, "
+                f"retrying with {kwargs['max_tokens'] * 2}"
+            )
+            kwargs["max_tokens"] = kwargs["max_tokens"] * 2
+            return self._stream_generate(kwargs)
+
+        return {
+            "text": text_so_far,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }

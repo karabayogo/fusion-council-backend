@@ -38,6 +38,7 @@ models:
     family: minimax
     tier: frontier
     role_bias: backup
+    timeout_seconds: 600  # thinking model needs more time than the 300s default
 
   - alias: minimax/MiniMax-M2.7-synthesis
     provider: minimax_token_plan
@@ -46,6 +47,7 @@ models:
     family: minimax
     tier: frontier
     role_bias: synthesis
+    timeout_seconds: 600  # thinking model needs more time than the 300s default
 
   - alias: opencode-go/deepseek-v4-pro-creative
     provider: opencode_go
