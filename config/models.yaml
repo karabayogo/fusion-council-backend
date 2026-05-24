@@ -22,6 +22,7 @@ models:
     family: deepseek
     tier: frontier
     role_bias: primary
+    timeout_seconds: 600  # thinking model — 300s was too short, times out on long chains
 
   - alias: opencode-go/qwen3.6-plus
     provider: opencode_go
@@ -30,6 +31,7 @@ models:
     family: qwen
     tier: frontier
     role_bias: reviewer
+    timeout_seconds: 600  # thinking model — 300s was too short for long reasoning chains
 
   - alias: minimax/MiniMax-M2.7
     provider: minimax_token_plan
@@ -56,6 +58,7 @@ models:
     family: deepseek
     tier: frontier
     role_bias: creative
+    timeout_seconds: 600  # thinking model — 300s was too short, times out on long chains
 
   - alias: opencode-go/kimi-k2.6
     provider: opencode_go
@@ -64,3 +67,4 @@ models:
     family: kimi
     tier: frontier
     role_bias: verification
+    timeout_seconds: 600  # fallback model — 300s was too short when promoted mid-chain
