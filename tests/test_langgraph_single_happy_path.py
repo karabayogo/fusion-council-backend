@@ -242,7 +242,6 @@ class TestLangGraphSingleCompilation:
         builder.add_node("node_finalize_failure", node_finalize_failure)
 
         # START entry point
-        from langgraph.graph import START
         builder.add_edge(START, "node_prepare_run")
         builder.add_edge("node_prepare_run", "node_generation_call")
         builder.add_edge("node_generation_call", "node_generation_persist")
@@ -272,7 +271,6 @@ class TestLangGraphSingleCompilation:
         builder.add_node("node_finalize_success", node_finalize_success)
         builder.add_node("node_finalize_failure", node_finalize_failure)
 
-        from langgraph.graph import START
         builder.add_edge(START, "node_prepare_run")
         builder.add_edge("node_prepare_run", "node_generation_call")
         builder.add_edge("node_generation_call", "node_generation_persist")
@@ -320,7 +318,6 @@ class TestLangGraphSingleCompilation:
         builder.add_node("node_finalize_success", node_finalize_success)
         builder.add_node("node_finalize_failure", node_finalize_failure)
 
-        from langgraph.graph import START
         builder.add_edge(START, "node_prepare_run")
         builder.add_edge("node_prepare_run", "node_generation_call")
         builder.add_edge("node_generation_call", "node_generation_persist")
@@ -374,7 +371,6 @@ class TestLangGraphSingleCompilation:
         builder.add_node("node_finalize_success", node_finalize_success)
         builder.add_node("node_finalize_failure", node_finalize_failure)
 
-        from langgraph.graph import START
         builder.add_edge(START, "node_prepare_run")
         # node_prepare_run detects missing run_id -> sets current_stage="finalize_failure"
         # which routes to generation_call -> generation_persist -> node_finalize_failure via linear edges
