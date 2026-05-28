@@ -118,3 +118,38 @@ CREATE TABLE IF NOT EXISTS decision_log (
 );
 CREATE INDEX IF NOT EXISTS idx_decision_log_pending ON decision_log(pending);
 CREATE INDEX IF NOT EXISTS idx_decision_log_prompt_hash ON decision_log(prompt_hash);
+
+CREATE TABLE IF NOT EXISTS run_orchestration_state (
+  run_id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  orchestrator_engine TEXT NOT NULL,
+  orchestrator_mode TEXT NOT NULL,
+  engine_version TEXT NOT NULL,
+  orchestration_status TEXT NOT NULL,
+  last_checkpoint_id TEXT,
+  resume_count INTEGER NOT NULL DEFAULT 0,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_orch_state_engine_mode
+  ON run_orchestration_state(orchestrator_engine, orchestrator_mode, orchestration_status);
+
+CREATE TABLE IF NOT EXISTS run_shadow_diff (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  engine TEXT NOT NULL,
+  final_status TEXT,
+  final_answer_present INTEGER NOT NULL DEFAULT 0,
+  stage_count INTEGER,
+  stage_order_match INTEGER,
+  candidate_counts TEXT,
+  error_codes TEXT,
+  diff_summary TEXT,
+  logged_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES runs(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_shadow_diff_run_id ON run_shadow_diff(run_id);
+CREATE INDEX IF NOT EXISTS idx_run_shadow_diff_logged_at ON run_shadow_diff(logged_at);

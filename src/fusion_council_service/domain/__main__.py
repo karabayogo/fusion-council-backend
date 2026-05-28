@@ -15,6 +15,7 @@ from fusion_council_service.domain.worker_loop import Worker
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
 from fusion_council_service.providers.registry import build_provider_registry
+from fusion_council_service.startup import run_shutdown_sync, run_startup_sync
 
 setup_logging()
 logger = get_logger("fusion_council_service")
@@ -29,6 +30,12 @@ settings = Settings(
     OLLAMA_API_KEY=os.environ.get("OLLAMA_API_KEY", ""),
     MINIMAX_ANTHROPIC_BASE_URL=os.environ.get("MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"),
     OLLAMA_BASE_URL=os.environ.get("OLLAMA_BASE_URL", "https://ollama.com"),
+    ORCHESTRATOR_ENGINE=os.environ.get("ORCHESTRATOR_ENGINE", "legacy"),
+    ORCHESTRATOR_LANGGRAPH_MODES=os.environ.get("ORCHESTRATOR_LANGGRAPH_MODES", ""),
+    LANGGRAPH_CHECKPOINT_ENABLED=os.environ.get("LANGGRAPH_CHECKPOINT_ENABLED", "false"),
+    LANGGRAPH_CHECKPOINT_DB_URL=os.environ.get("LANGGRAPH_CHECKPOINT_DB_URL", ""),
+    LANGGRAPH_THREAD_NAMESPACE=os.environ.get("LANGGRAPH_THREAD_NAMESPACE", "fusion-council"),
+    LANGGRAPH_ENGINE_VERSION=os.environ.get("LANGGRAPH_ENGINE_VERSION", "v1"),
 )
 
 
@@ -51,7 +58,15 @@ def main() -> None:
         catalog=catalog,
         poll_interval_ms=settings.WORKER_POLL_INTERVAL_MS,
         heartbeat_interval_ms=settings.WORKER_HEARTBEAT_INTERVAL_MS,
+        orchestrator_engine=settings.ORCHESTRATOR_ENGINE,
+        orchestrator_langgraph_modes=settings.ORCHESTRATOR_LANGGRAPH_MODES,
+        langgraph_thread_namespace=settings.LANGGRAPH_THREAD_NAMESPACE,
+        langgraph_engine_version=settings.LANGGRAPH_ENGINE_VERSION,
     )
+
+    # Worker process has its own lifecycle — initialize optional checkpointer here,
+    # not only in FastAPI lifespan.
+    run_startup_sync(settings)
 
     def signal_handler(signum, frame):
         logger.info(f"Received signal {signum}, shutting down")
@@ -72,7 +87,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
 
-    worker.run()
+    try:
+        worker.run()
+    finally:
+        run_shutdown_sync()
 
 
 if __name__ == "__main__":

@@ -18,6 +18,12 @@ from fusion_council_service.domain.event_emitter import (
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
 from fusion_council_service.domain.model_selection import select_healthy_stage_model, update_health_for_candidate
+from fusion_council_service.domain.orchestration import (
+    LangGraphEngine,
+    LegacyEngine,
+    OrchestrationEngineRouter,
+    parse_langgraph_modes,
+)
 from fusion_council_service.domain.run_repository import claim_next_run, reset_stale_running_runs, update_run_status
 from fusion_council_service.domain.scoring import (
     build_council_synthesis_prompt, build_debate_prompt, build_fusion_prompt,
@@ -72,6 +78,10 @@ class Worker:
         poll_interval_ms: int = 1000,
         heartbeat_interval_ms: int = 5000,
         stale_run_threshold_seconds: int = 30,
+        orchestrator_engine: str = "legacy",
+        orchestrator_langgraph_modes: str = "",
+        langgraph_thread_namespace: str = "fusion-council",
+        langgraph_engine_version: str = "v1",
     ):
         self._db_path = db_path
         self._db_url = db_url
@@ -84,6 +94,15 @@ class Worker:
         self._db = None
         self._current_run_task: Optional[asyncio.Task] = None
         self._worker_id = f"worker-{int(time.time())}"
+        self._router = OrchestrationEngineRouter(
+            orchestrator_engine=orchestrator_engine,
+            langgraph_modes=parse_langgraph_modes(orchestrator_langgraph_modes),
+            legacy_engine=LegacyEngine(),
+            langgraph_engine=LangGraphEngine(
+                thread_namespace=langgraph_thread_namespace,
+                engine_version=langgraph_engine_version,
+            ),
+        )
 
     def _get_db(self):
         if self._db is None:
@@ -1020,14 +1039,10 @@ class Worker:
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(run_id, mode))
 
         try:
-            if mode == "single":
-                await self._run_single(db, run)
-            elif mode == "fusion":
-                await self._run_fusion(db, run)
-            elif mode == "council":
-                await self._run_council(db, run)
-            else:
+            if mode not in {"single", "fusion", "council"}:
                 await self._fail_run(db, run_id, "INVALID_MODE", f"Unknown mode: {mode}")
+            else:
+                await self._router.execute(db=db, run=run, worker_ctx={"worker": self})
         except sqlite3.OperationalError as e:
             logger.error(
                 f"SQLite operational error in run {run_id}: {e}. Resetting connection.",
@@ -1108,3 +1123,13 @@ class Worker:
     def stop(self) -> None:
         self._running = False
         logger.info("Worker loop stopping")
+
+    async def run_mode_legacy(self, db: object, run: dict, mode: str) -> None:
+        if mode == "single":
+            await self._run_single(db, run)
+        elif mode == "fusion":
+            await self._run_fusion(db, run)
+        elif mode == "council":
+            await self._run_council(db, run)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")

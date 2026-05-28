@@ -24,6 +24,7 @@ from fusion_council_service.db import initialize_schema, new_session
 from fusion_council_service.logging_utils import setup_logging, get_logger
 from fusion_council_service.model_catalog import load_and_validate_catalog
 from fusion_council_service.providers.registry import build_provider_registry
+from fusion_council_service.startup import run_shutdown, run_startup
 
 # Load .env file before any settings access
 load_dotenv()
@@ -93,6 +94,12 @@ async def lifespan(app: FastAPI):
         MAX_PARALLEL_MODEL_CALLS=int(os.environ.get("MAX_PARALLEL_MODEL_CALLS", "3")),
         SSE_POLL_INTERVAL_MS=int(os.environ.get("SSE_POLL_INTERVAL_MS", "500")),
         MODEL_CATALOG_PATH=os.environ.get("MODEL_CATALOG_PATH", "./config/models.yaml"),
+        ORCHESTRATOR_ENGINE=os.environ.get("ORCHESTRATOR_ENGINE", "legacy"),
+        ORCHESTRATOR_LANGGRAPH_MODES=os.environ.get("ORCHESTRATOR_LANGGRAPH_MODES", ""),
+        LANGGRAPH_CHECKPOINT_ENABLED=os.environ.get("LANGGRAPH_CHECKPOINT_ENABLED", "false"),
+        LANGGRAPH_CHECKPOINT_DB_URL=os.environ.get("LANGGRAPH_CHECKPOINT_DB_URL", ""),
+        LANGGRAPH_THREAD_NAMESPACE=os.environ.get("LANGGRAPH_THREAD_NAMESPACE", "fusion-council"),
+        LANGGRAPH_ENGINE_VERSION=os.environ.get("LANGGRAPH_ENGINE_VERSION", "v1"),
     )
 
     # Validate required settings — accept either DATABASE_URL or DATABASE_PATH
@@ -106,6 +113,9 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("SERVICE_API_KEYS must contain at least one key")
 
     logger.info(f"API keys loaded: <{len(_settings.service_api_keys)} service keys>, <{len(_settings.service_admin_api_keys)} admin keys>")
+    logger.info(
+        f"Orchestrator engine: {_settings.ORCHESTRATOR_ENGINE}, checkpoint: {_settings.LANGGRAPH_CHECKPOINT_ENABLED}"
+    )
 
     # Initialize DB
     db = new_session()
@@ -122,10 +132,14 @@ async def lifespan(app: FastAPI):
     # Init API routes with DB + provider registry reference
     init_api(_settings, _registry)
 
+    # Optional LangGraph checkpointer bootstrap (non-fatal on failure).
+    await run_startup(_settings)
+
     logger.info(f"Fusion Council Service ready — APP_ENV={_settings.APP_ENV}", event_type="app.ready")
 
     yield
 
+    await run_shutdown()
     logger.info("Shutting down fusion-council-service", event_type="app.stop")
 
 

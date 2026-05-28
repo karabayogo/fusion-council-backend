@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     MODEL_CATALOG_PATH: str = "./config/models.yaml"
     DECISION_LOG_MAX_ENTRIES: int = 500
     REFLECTION_ROLE_ALIAS: str = "minimax/MiniMax-M2.7"
+    ORCHESTRATOR_ENGINE: str = "legacy"
+    ORCHESTRATOR_LANGGRAPH_MODES: str = ""
+    LANGGRAPH_CHECKPOINT_ENABLED: bool = False
+    LANGGRAPH_CHECKPOINT_DB_URL: str = ""
+    LANGGRAPH_THREAD_NAMESPACE: str = "fusion-council"
+    LANGGRAPH_ENGINE_VERSION: str = "v1"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
