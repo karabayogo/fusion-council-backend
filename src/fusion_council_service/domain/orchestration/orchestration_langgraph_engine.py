@@ -65,7 +65,7 @@ def _build_single_graph() -> "StateGraph":
 
     compiled = builder.compile()
 
-    logger.debug("LangGraph StateGraph (single) compiled successfully")
+    logger.info("LangGraph StateGraph (single) compiled successfully")
     return compiled
 
 
@@ -118,7 +118,7 @@ def _build_fusion_graph() -> "StateGraph":
 
     compiled = builder.compile()
 
-    logger.debug("LangGraph StateGraph (fusion) compiled successfully")
+    logger.info("LangGraph StateGraph (fusion) compiled successfully")
     return compiled
 
 

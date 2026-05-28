@@ -203,7 +203,7 @@ def node_finalize_fusion_success(state: OrchestrationState) -> OrchestrationStat
     return _full_state(state, {
         "current_stage": "finalize_success",
         "final_answer": state.get("computed_final_answer"),
-        "final_confidence": state.get("computed_final_confidence", 0.0),
+        "final_confidence": state.get("computed_final_confidence") if state.get("computed_final_confidence") is not None else 0.0,
     })
 
 
@@ -219,6 +219,6 @@ def node_finalize_fusion_failure(state: OrchestrationState) -> OrchestrationStat
 
     return _full_state(state, {
         "current_stage": "finalize_failure",
-        "error_code": state.get("error_code", "UNKNOWN"),
-        "error_message": state.get("error_message", "Fusion failed without error message"),
+        "error_code": state.get("error_code") or "UNKNOWN",
+        "error_message": state.get("error_message") or "Fusion failed without error message",
     })
