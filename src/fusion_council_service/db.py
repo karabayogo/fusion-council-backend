@@ -31,6 +31,27 @@ _SessionFactory = None
 _is_postgresql = False
 
 
+def _render_schema_sql_for_active_dialect(raw_sql: str) -> str:
+    """Normalize schema.sql so one source file can serve SQLite and PostgreSQL."""
+    if not _is_postgresql:
+        return raw_sql
+
+    lines = []
+    for line in raw_sql.split("\n"):
+        if line.strip().startswith("PRAGMA "):
+            continue
+        lines.append(line)
+    sql = "\n".join(lines)
+
+    # SQLite autoincrement syntax is invalid in PostgreSQL.
+    return re.sub(
+        r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b",
+        "BIGSERIAL PRIMARY KEY",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def _detect_dialect():
     """Check if we're configured for PostgreSQL or SQLite."""
     global _is_postgresql
@@ -112,19 +133,7 @@ def initialize_schema(db=None) -> None:
         _own_session = False
 
     schema_path = Path(__file__).parent / "schema.sql"
-    sql = schema_path.read_text()
-
-    # Strip SQLite-specific PRAGMAs for PostgreSQL
-    if _is_postgresql:
-        lines = []
-        for line in sql.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("PRAGMA "):
-                continue
-            # Convert AUTOINCREMENT to just auto-increment (PostgreSQL SERIAL)
-            # Handled in schema.sql with conditional comments
-            lines.append(line)
-        sql = "\n".join(lines)
+    sql = _render_schema_sql_for_active_dialect(schema_path.read_text())
 
     if _is_postgresql:
         # Execute each statement separately for PostgreSQL
