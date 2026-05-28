@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -151,4 +150,3 @@ async def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(main()))
-
