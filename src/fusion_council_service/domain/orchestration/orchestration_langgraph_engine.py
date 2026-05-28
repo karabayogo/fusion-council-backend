@@ -1,4 +1,4 @@
-"""LangGraph orchestration engine — Phase 4 checkpointing implementation."""
+"""LangGraph orchestration engine — Phase 4 checkpointing + Phase 5 fusion implementation."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -22,11 +22,13 @@ if TYPE_CHECKING:
 
 logger = get_logger("fusion_council_service.orchestration.langgraph_engine")
 
-# Module-level compiled graph singleton — built once, reused across all invocations.
-_cached_graph: "StateGraph" | None = None
+# Module-level compiled graph singletons — built once, reused across all invocations.
+_cached_graph_single: "StateGraph" | None = None
+_cached_graph_fusion: "StateGraph" | None = None
+_cached_graph_council: "StateGraph" | None = None
 
 
-def _build_graph() -> "StateGraph":
+def _build_single_graph() -> "StateGraph":
     """
     Build and compile the LangGraph StateGraph for single-mode orchestration.
 
@@ -63,16 +65,146 @@ def _build_graph() -> "StateGraph":
 
     compiled = builder.compile()
 
-    logger.debug("LangGraph StateGraph compiled successfully")
+    logger.debug("LangGraph StateGraph (single) compiled successfully")
     return compiled
 
 
-def _graph() -> "StateGraph":
-    """Return the compiled graph singleton, building it on first call."""
-    global _cached_graph
-    if _cached_graph is None:
-        _cached_graph = _build_graph()
-    return _cached_graph
+def _build_fusion_graph() -> "StateGraph":
+    """
+    Build and compile the LangGraph StateGraph for fusion-mode orchestration.
+
+    Sequence: START -> node_prepare_fusion -> node_generation_parallel
+                                  -> node_synthesis_call -> node_synthesis_persist
+                                  -> node_verification_call -> node_verification_persist
+                                  -> node_finalize_fusion_success
+                                  (or node_finalize_fusion_failure on error path)
+
+    The graph is compiled once at module load and reused for all invocations.
+    """
+    from langgraph.graph import StateGraph, START
+
+    from fusion_council_service.domain.orchestration.orchestration_nodes_fusion import (
+        node_finalize_fusion_failure,
+        node_finalize_fusion_success,
+        node_generation_parallel,
+        node_prepare_fusion,
+        node_synthesis_call,
+        node_synthesis_persist,
+        node_verification_call,
+        node_verification_persist,
+    )
+
+    builder = StateGraph(OrchestrationState)
+
+    builder.add_node("node_prepare_fusion", node_prepare_fusion)
+    builder.add_node("node_generation_parallel", node_generation_parallel)
+    builder.add_node("node_synthesis_call", node_synthesis_call)
+    builder.add_node("node_synthesis_persist", node_synthesis_persist)
+    builder.add_node("node_verification_call", node_verification_call)
+    builder.add_node("node_verification_persist", node_verification_persist)
+    builder.add_node("node_finalize_fusion_success", node_finalize_fusion_success)
+    builder.add_node("node_finalize_fusion_failure", node_finalize_fusion_failure)
+
+    # START -> first node
+    builder.add_edge(START, "node_prepare_fusion")
+
+    # Linear sequence edges
+    builder.add_edge("node_prepare_fusion", "node_generation_parallel")
+    builder.add_edge("node_generation_parallel", "node_synthesis_call")
+    builder.add_edge("node_synthesis_call", "node_synthesis_persist")
+    builder.add_edge("node_synthesis_persist", "node_verification_call")
+    builder.add_edge("node_verification_call", "node_verification_persist")
+    builder.add_edge("node_verification_persist", "node_finalize_fusion_success")
+
+    compiled = builder.compile()
+
+    logger.debug("LangGraph StateGraph (fusion) compiled successfully")
+    return compiled
+
+
+def _graph_single() -> "StateGraph":
+    """Return the compiled single-mode graph singleton, building it on first call."""
+    global _cached_graph_single
+    if _cached_graph_single is None:
+        _cached_graph_single = _build_single_graph()
+    return _cached_graph_single
+
+
+def _graph_fusion() -> "StateGraph":
+    """Return the compiled fusion-mode graph singleton, building it on first call."""
+    global _cached_graph_fusion
+    if _cached_graph_fusion is None:
+        _cached_graph_fusion = _build_fusion_graph()
+    return _cached_graph_fusion
+
+
+def _build_council_graph() -> "StateGraph":
+    """
+    Build and compile the LangGraph StateGraph for council-mode orchestration.
+
+    Sequence: START -> node_prepare_council -> node_first_opinion_parallel
+                                  -> node_first_opinion_persist
+                                  -> node_synthesis_call -> node_synthesis_persist
+                                  -> node_verification_call -> node_verification_persist
+                                  -> node_finalize_council_success
+                                  (or node_finalize_council_failure on error path)
+
+    Peer review and debate nodes are NOT included in the LangGraph path because
+    they are conditional (only run when agreement < 0.55). The worker_loop.py
+    handles those stages outside the graph, then re-enters the graph at
+    node_synthesis_call.
+
+    The graph is compiled once at module load and reused for all invocations.
+    """
+    from langgraph.graph import StateGraph, START
+
+    from fusion_council_service.domain.orchestration.orchestration_nodes_council import (
+        node_finalize_council_failure,
+        node_finalize_council_success,
+        node_first_opinion_parallel,
+        node_first_opinion_persist,
+        node_prepare_council,
+        node_synthesis_call,
+        node_synthesis_persist,
+        node_verification_call,
+        node_verification_persist,
+    )
+
+    builder = StateGraph(OrchestrationState)
+
+    builder.add_node("node_prepare_council", node_prepare_council)
+    builder.add_node("node_first_opinion_parallel", node_first_opinion_parallel)
+    builder.add_node("node_first_opinion_persist", node_first_opinion_persist)
+    builder.add_node("node_synthesis_call", node_synthesis_call)
+    builder.add_node("node_synthesis_persist", node_synthesis_persist)
+    builder.add_node("node_verification_call", node_verification_call)
+    builder.add_node("node_verification_persist", node_verification_persist)
+    builder.add_node("node_finalize_council_success", node_finalize_council_success)
+    builder.add_node("node_finalize_council_failure", node_finalize_council_failure)
+
+    # START -> first node
+    builder.add_edge(START, "node_prepare_council")
+
+    # Linear sequence edges (peer_review and debate handled outside graph in worker_loop)
+    builder.add_edge("node_prepare_council", "node_first_opinion_parallel")
+    builder.add_edge("node_first_opinion_parallel", "node_first_opinion_persist")
+    builder.add_edge("node_first_opinion_persist", "node_synthesis_call")
+    builder.add_edge("node_synthesis_call", "node_synthesis_persist")
+    builder.add_edge("node_synthesis_persist", "node_verification_call")
+    builder.add_edge("node_verification_call", "node_verification_persist")
+    builder.add_edge("node_verification_persist", "node_finalize_council_success")
+
+    compiled = builder.compile()
+
+    return compiled
+
+
+def _graph_council() -> "StateGraph":
+    """Return the compiled council-mode graph singleton, building it on first call."""
+    global _cached_graph_council
+    if _cached_graph_council is None:
+        _cached_graph_council = _build_council_graph()
+    return _cached_graph_council
 
 
 class LangGraphEngine:
@@ -124,6 +256,9 @@ class LangGraphEngine:
         """
 
         run_id = run["run_id"]
+        # Import lazily to avoid hard dependency on langgraph.checkpoint.postgres
+        # when the module is imported in test environments without libpq.
+        from fusion_council_service.startup import get_checkpoint_saver
         saver = get_checkpoint_saver()
 
         # Build the initial OrchestrationState for this run
@@ -149,8 +284,16 @@ class LangGraphEngine:
             "computed_final_confidence": None,
         }
 
-        # Invoke the graph (fresh run or resume)
-        graph = _graph()
+        # Select the correct graph based on mode
+        if mode == "single":
+            graph = _graph_single()
+        elif mode == "fusion":
+            graph = _graph_fusion()
+        elif mode == "council":
+            graph = _graph_council()
+        else:
+            # For modes without a dedicated graph, use single (fallback)
+            graph = _graph_single()
 
         if is_resume and saver is not None:
             # Resume path: replay from last checkpoint
@@ -270,7 +413,13 @@ class LangGraphEngine:
             )
             return
 
-        saver = get_checkpoint_saver()
+        saver = None
+        try:
+            from fusion_council_service.startup import get_checkpoint_saver
+            saver = get_checkpoint_saver()
+        except Exception:
+            pass
+
         if saver is None:
             logger.warning(
                 "LangGraph checkpointer unavailable; continuing without persisted graph checkpoints",
