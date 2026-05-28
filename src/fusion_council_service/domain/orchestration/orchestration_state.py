@@ -1,6 +1,5 @@
 """LangGraph state schema for orchestration checkpointing."""
 import base64
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional

@@ -1,7 +1,6 @@
 """LangGraph orchestration engine — Phase 4 checkpointing implementation."""
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from fusion_council_service.domain.orchestration.orchestration_checkpoint import (
@@ -10,7 +9,6 @@ from fusion_council_service.domain.orchestration.orchestration_checkpoint import
 )
 from fusion_council_service.domain.orchestration.orchestration_state import (
     OrchestrationState,
-    _serialize_state,
 )
 from fusion_council_service.domain.orchestration.orchestration_state_repository import (
     get_orchestration_state,
@@ -124,10 +122,6 @@ class LangGraphEngine:
         Returns:
             Final OrchestrationState after graph execution
         """
-        import asyncio
-        from fusion_council_service.domain.orchestration.orchestration_legacy_engine import (
-            OrchestrationLegacyEngine,
-        )
 
         run_id = run["run_id"]
         saver = get_checkpoint_saver()
@@ -236,11 +230,7 @@ class LangGraphEngine:
         run_mode_legacy() which is called by the caller after the graph returns.
         This node just handles checkpoint sequencing.
         """
-        import asyncio
 
-        from fusion_council_service.domain.orchestration.orchestration_legacy_engine import (
-            OrchestrationLegacyEngine,
-        )
 
         run_id = run["run_id"]
         thread_id = self._thread_id(run_id, mode)
