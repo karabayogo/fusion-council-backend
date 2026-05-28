@@ -9,6 +9,7 @@ from fusion_council_service.config import Settings
 
 if TYPE_CHECKING:
     import asyncpg
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +149,55 @@ def check_engine_version_compatible(stored_version: str, current_version: str) -
             f"Engine version mismatch: stored={stored_version!r}, current={current_version!r}. "
             "Refusing to replay. Mark run failed and do not auto-retry."
         )
+
+
+def get_checkpoint_snapshot(
+    saver: "AsyncPostgresSaver",
+    config: dict,
+) -> dict | None:
+    """
+    Fetch the latest checkpoint snapshot from the LangGraph checkpointer.
+
+    Args:
+        saver: AsyncPostgresSaver instance (from get_checkpoint_saver())
+        config: LangGraph config dict with keys "thread_id" and "checkpoint_ns"
+
+    Returns:
+        The checkpoint's ``channel_values`` dict if found, else None.
+        Returns None on any error (saver unavailable, no checkpoint, etc).
+
+    Typical usage::
+
+        from fusion_council_service.startup import get_checkpoint_saver
+        from fusion_council_service.domain.orchestration.orchestration_checkpoint import (
+            get_checkpoint_snapshot,
+        )
+
+        saver = get_checkpoint_saver()
+        if saver is not None:
+            config = {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}
+            snapshot = get_checkpoint_snapshot(saver, config)
+            if snapshot is not None:
+                # resume from snapshot["run_id"], etc.
+    """
+    import asyncio
+
+    try:
+        # aget is the async load method on AsyncPostgresSaver
+        checkpoint = asyncio.run(saver.aget(config)) if asyncio.iscoroutinefunction(saver.aget) else None
+    except Exception:
+        return None
+
+    if checkpoint is None:
+        return None
+
+    # The checkpoint dict uses "channel_values" for the actual state after LangGraph v1.
+    if isinstance(checkpoint, dict) and "channel_values" in checkpoint:
+        return checkpoint["channel_values"]
+    # Fallback: some versions surface the state directly at the top level.
+    if isinstance(checkpoint, dict):
+        # Strip known LangGraph internal keys; pass through everything else as the snapshot.
+        internal_keys = {"v", "ts", "id", "parent_checkpoint_id", "channel_versions", "versions_seen"}
+        snapshot = {k: v for k, v in checkpoint.items() if k not in internal_keys}
+        return snapshot if snapshot else None
+    return None

@@ -4,6 +4,7 @@ from .orchestration_checkpoint import (
     OrchestrationEngineVersionMismatch,
     check_engine_version_compatible,
     ensure_langgraph_checkpoint_tables,
+    get_checkpoint_snapshot,
     get_or_create_thread_id,
 )
 from .orchestration_contracts import OrchestrationEngine
@@ -54,6 +55,7 @@ __all__ = [
     "OrchestrationEngineVersionMismatch",
     "check_engine_version_compatible",
     "ensure_langgraph_checkpoint_tables",
+    "get_checkpoint_snapshot",
     "get_or_create_thread_id",
     # state
     "OrchestrationState",
