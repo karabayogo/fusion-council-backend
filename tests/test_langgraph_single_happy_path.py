@@ -66,7 +66,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_prepare_run(input_state)
+        result = asyncio.run(node_prepare_run(input_state))
         assert result["current_stage"] == "prepare_run"
 
     def test_node_prepare_run_routes_to_failure_when_run_id_missing(self):
@@ -95,7 +95,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_prepare_run(input_state)
+        result = asyncio.run(node_prepare_run(input_state))
         assert result["current_stage"] == "finalize_failure"
         assert result["error_code"] == "RUN_ID_MISSING"
 
@@ -125,7 +125,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_generation_call(state)
+        result = asyncio.run(node_generation_call(state))
         assert result["current_stage"] == "generation_call"
 
     def test_node_generation_persist_advances_stage_and_adds_candidate(self):
@@ -155,7 +155,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_generation_persist(state)
+        result = asyncio.run(node_generation_persist(state))
         assert result["current_stage"] == "generation_persist"
         assert "candidate-uuid-abc" in result["candidate_ids"]
 
@@ -185,7 +185,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_finalize_success(already_finalized)
+        result = asyncio.run(node_finalize_success(already_finalized))
         assert result["final_answer"] == "already set"  # unchanged
 
     def test_node_finalize_failure_idempotent_guard(self):
@@ -214,7 +214,7 @@ class TestLangGraphSingleNodes:
             "resume_count": 0,
         }
 
-        result = node_finalize_failure(already_failed)
+        result = asyncio.run(node_finalize_failure(already_failed))
         assert result["error_code"] == "ALREADY_FAILED"  # unchanged
 
 
@@ -295,7 +295,7 @@ class TestLangGraphSingleCompilation:
             "resume_count": 0,
         }
 
-        result = compiled.invoke(initial_state)
+        result = asyncio.run(compiled.ainvoke(initial_state))
         assert result["current_stage"] == "finalize_success"
 
     def test_stategraph_invoke_happy_path_all_stages_transition(self):
@@ -343,7 +343,7 @@ class TestLangGraphSingleCompilation:
             "resume_count": 0,
         }
 
-        result = compiled.invoke(initial_state)
+        result = asyncio.run(compiled.ainvoke(initial_state))
 
         # Verify all stage transitions
         assert result["run_id"] == "test-run-stages"
@@ -399,7 +399,7 @@ class TestLangGraphSingleCompilation:
             "resume_count": 0,
         }
 
-        result = compiled.invoke(bad_state)
+        result = asyncio.run(compiled.ainvoke(bad_state))
         # node_prepare_run detects missing run_id -> sets finalize_failure
         # node_generation_call and node_generation_persist are no-ops (idempotent guards)
         # node_finalize_failure is no-op (already in finalize state)

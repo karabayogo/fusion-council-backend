@@ -1,5 +1,5 @@
-"""Tests for get_checkpoint_snapshot."""
-
+"""Tests for get_checkpoint_snapshot (async)."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,27 +10,31 @@ from fusion_council_service.domain.orchestration.orchestration_checkpoint import
 
 
 class TestGetCheckpointSnapshot:
-    """Unit tests for get_checkpoint_snapshot helper."""
+    """Unit tests for get_checkpoint_snapshot helper (now async)."""
 
     @pytest.fixture
     def saver(self):
         return MagicMock()
 
     def test_returns_none_when_saver_is_none(self):
-        result = get_checkpoint_snapshot(None, {"thread_id": "t1", "checkpoint_ns": ""})
+        """Passing None saver returns None (async)."""
+        result = asyncio.run(get_checkpoint_snapshot(None, {"thread_id": "t1", "checkpoint_ns": ""}))
         assert result is None
 
-    def test_returns_none_on_saver_aget_error(self, saver):
+    @pytest.mark.asyncio
+    async def test_returns_none_on_saver_aget_error(self, saver):
         saver.aget = AsyncMock(side_effect=RuntimeError("connection failed"))
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result is None
 
-    def test_returns_none_when_checkpoint_is_none(self, saver):
+    @pytest.mark.asyncio
+    async def test_returns_none_when_checkpoint_is_none(self, saver):
         saver.aget = AsyncMock(return_value=None)
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result is None
 
-    def test_extracts_channel_values_from_checkbaroint(self, saver):
+    @pytest.mark.asyncio
+    async def test_extracts_channel_values_from_checkpoint(self, saver):
         """Standard LangGraph v1 checkpoint structure has channel_values."""
         saver.aget = AsyncMock(
             return_value={
@@ -46,7 +50,7 @@ class TestGetCheckpointSnapshot:
                 "versions_seen": {},
             }
         )
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result == {
             "run_id": "r1",
             "mode": "single",
@@ -54,7 +58,8 @@ class TestGetCheckpointSnapshot:
             "current_stage": "generation_call",
         }
 
-    def test_strips_internal_keys_from_flat_checkpoint(self, saver):
+    @pytest.mark.asyncio
+    async def test_strips_internal_keys_from_flat_checkpoint(self, saver):
         """When channel_values is absent, strip known internal keys and return rest."""
         saver.aget = AsyncMock(
             return_value={
@@ -68,10 +73,11 @@ class TestGetCheckpointSnapshot:
                 "current_stage": "synthesis_call",
             }
         )
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result == {"run_id": "r2", "current_stage": "synthesis_call"}
 
-    def test_returns_none_when_all_keys_are_internal(self, saver):
+    @pytest.mark.asyncio
+    async def test_returns_none_when_all_keys_are_internal(self, saver):
         """If stripping internal keys leaves nothing, return None."""
         saver.aget = AsyncMock(
             return_value={
@@ -81,11 +87,12 @@ class TestGetCheckpointSnapshot:
                 "versions_seen": {},
             }
         )
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result is None
 
-    def test_returns_none_for_non_dict_checkpoint(self, saver):
+    @pytest.mark.asyncio
+    async def test_returns_none_for_non_dict_checkpoint(self, saver):
         """Scalar values (not dicts) are not valid snapshots."""
         saver.aget = AsyncMock(return_value="not a checkpoint")
-        result = get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
+        result = await get_checkpoint_snapshot(saver, {"thread_id": "t1", "checkpoint_ns": ""})
         assert result is None
