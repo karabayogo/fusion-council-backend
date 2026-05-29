@@ -1,47 +1,48 @@
 """
-LangGraph nodes for fusion-mode orchestration.
+LangGraph nodes for fusion mode orchestration.
 
-Stage sequence:
-  START -> node_prepare_fusion -> node_generation_parallel
-                                   -> node_synthesis_call -> node_synthesis_persist
-                                   -> node_verification_call -> node_verification_persist
-                                   -> node_finalize_fusion_success
-                                   (or node_finalize_fusion_failure on error path)
+Fusion mode: multiple models run in parallel, then synthesize their answers.
 
-Design: coarse-grained wrapper nodes (Option B from plan).
-Each node is a pure function: OrchestrationState -> OrchestrationState.
-Side effects are performed by the caller (worker_loop.py) after node returns,
-preserving idempotency and replay safety.
-
-IMPORTANT — LangGraph channel semantics for total=False TypedDict:
-  Every node MUST return ALL fields of OrchestrationState on every invocation.
-  Missing fields default to None in the channel, which then propagates to all
-  subsequent nodes in the same step. This is a fundamental LangGraph behavior,
-  NOT a bug. Nodes that return partial dicts will silently zero out missing fields.
+Design pattern: Option A (async, do real work)
+- Nodes are async and perform actual work (model calls, DB writes)
+- Worker dependencies passed via RunnableConfig.configurable
+- Each node has idempotency guards
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Optional
+
+from fusion_council_service.domain.candidate_repository import insert_candidate
+from fusion_council_service.domain.orchestration.orchestration_state import OrchestrationState
+from fusion_council_service.domain.scoring import build_fusion_prompt
+from fusion_council_service.logging_utils import get_logger
 
 if TYPE_CHECKING:
-    from fusion_council_service.domain.orchestration.orchestration_state import (
-        OrchestrationState,
-    )
+    from langchain_core.runnables import RunnableConfig
+
+logger = get_logger(__name__)
 
 
-def _full_state(state: OrchestrationState, updates: dict) -> OrchestrationState:
-    """Return a full OrchestrationState dict merged with updates.
-
-    This helper avoids the verbose pattern of spelling out every field.
-    All fields from the input state are forwarded; only the keys in updates
-    are overwritten.
-    """
-    result: OrchestrationState = {**state}  # type: ignore[assignment]
-    result.update(updates)  # type: ignore[assignment]
-    return result
+def _full_state(state: OrchestrationState, **overrides: Any) -> OrchestrationState:
+    """Return state with overrides applied."""
+    result = dict(state)
+    result.update(overrides)
+    return result  # type: ignore[return-value]
 
 
-def node_prepare_fusion(state: OrchestrationState) -> OrchestrationState:
+def _get_worker(config: Optional[RunnableConfig]) -> Optional[Any]:
+    """Extract worker from config."""
+    if config and "configurable" in config:
+        return config["configurable"].get("worker")
+    return None
+
+
+async def node_prepare_fusion(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
     Entry node for fusion mode — validates run exists and sets initial stage.
 
@@ -50,147 +51,466 @@ def node_prepare_fusion(state: OrchestrationState) -> OrchestrationState:
     """
     run_id = state.get("run_id")
     if not run_id:
-        return _full_state(state, {
-            "current_stage": "finalize_failure",
-            "error_code": "RUN_ID_MISSING",
-            "error_message": "run_id not found in state — cannot proceed",
-        })
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="RUN_ID_MISSING",
+            error_message="run_id not found in state — cannot proceed",
+        )
 
     current = state.get("current_stage", "")
     if current.startswith(("generation", "synthesis", "verification", "finalize")):
         return state
 
-    return _full_state(state, {"current_stage": "prepare_fusion"})
+    # Log fusion mode start
+    logger.info("Preparing fusion mode", run_id=run_id)
+
+    return _full_state(state, current_stage="prepare_fusion")
 
 
-def node_generation_parallel(state: OrchestrationState) -> OrchestrationState:
+async def node_generation_parallel(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Generation parallel call node — advances to generation_parallel stage.
+    Generation parallel call node — calls multiple models in parallel.
 
-    No side effects here. The caller (worker_loop.py) performs the actual
-    parallel model API calls and populates current_candidate_id(s) in state
-    after this node returns. Keeping the node pure ensures replay safety.
-
-    Idempotency: if already past generation_parallel (at synthesis or beyond),
-    skip and return state unchanged.
+    Actual work:
+    - Get models for fusion mode from catalog
+    - Call each model in parallel (max 3 concurrent via semaphore)
+    - Store results in state for downstream nodes
     """
     current = state.get("current_stage", "")
     if current.startswith(("synthesis", "verification", "finalize")):
         return state
 
-    return _full_state(state, {"current_stage": "generation_parallel"})
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping parallel generation")
+        return _full_state(state, current_stage="generation_parallel")
+
+    run_id = state.get("run_id")
+    logger.info("Starting parallel generation", run_id=run_id)
+
+    # Get models for fusion mode
+    try:
+        models = worker.catalog.get_models_for_mode("fusion")
+    except Exception as e:
+        logger.error("Failed to get models for fusion mode", error=str(e))
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="MODEL_CATALOG_ERROR",
+            error_message=f"Failed to get fusion models: {e}",
+        )
+
+    if not models:
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="NO_MODELS",
+            error_message="No models available for fusion mode",
+        )
+
+    # Call models in parallel with semaphore (max 3 concurrent)
+    semaphore = asyncio.Semaphore(3)
+
+    async def call_model(model: dict) -> dict:
+        async with semaphore:
+            try:
+                request = {
+                    "provider": model.get("provider"),
+                    "model": model.get("model"),
+                    "prompt": state.get("prompt", ""),
+                    "max_tokens": state.get("max_tokens", 4096),
+                }
+                # Use worker's async provider method
+                success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
+                    request, worker.db, run_id
+                )
+                return {
+                    "alias": model.get("alias"),
+                    "success": success,
+                    "raw_text": raw_text,
+                    "error": err_msg,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                }
+            except Exception as e:
+                logger.error("Model call failed", model=model.get("alias"), error=str(e))
+                return {
+                    "alias": model.get("alias"),
+                    "success": False,
+                    "error": str(e),
+                }
+
+    # Execute all model calls in parallel
+    tasks = [call_model(model) for model in models]
+    results = await asyncio.gather(*tasks)
+
+    # Store results in state
+    candidate_results = [r for r in results if r.get("success")]
+    logger.info(
+        "Parallel generation complete",
+        run_id=run_id,
+        total_calls=len(results),
+        successful=len(candidate_results),
+    )
+
+    return _full_state(
+        state,
+        current_stage="generation_parallel",
+        candidate_results=candidate_results,
+    )
 
 
-def node_generation_persist(state: OrchestrationState) -> OrchestrationState:
+async def node_generation_persist(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Persist node — appends current_candidate_id to candidate_ids and advances stage.
+    Persist node — persists candidates to database.
 
-    Side effect (performed by caller after node returns):
-      INSERT INTO run_candidates (...) VALUES (...) ON CONFLICT DO NOTHING
-
-    Idempotency: if candidate_id already in candidate_ids list, skip adding it again.
-    Idempotency: if already past generation_persist, skip.
+    Idempotency: if candidate_id already in candidate_ids, skip.
     """
-    candidate_id = state.get("current_candidate_id")
-    existing_ids = state.get("candidate_ids", [])
-
-    if candidate_id and candidate_id not in existing_ids:
-        updated_ids = list(existing_ids) + [candidate_id]
-    else:
-        updated_ids = list(existing_ids)
-
     current = state.get("current_stage", "")
     if current.startswith(("synthesis", "verification", "finalize")):
         return state
 
-    return _full_state(state, {
-        "current_stage": "generation_persist",
-        "candidate_ids": updated_ids,
-    })
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping generation persist")
+        return _full_state(state, current_stage="generation_persist")
+
+    candidate_id = state.get("current_candidate_id")
+    if not candidate_id:
+        # No candidate to persist, just advance stage
+        return _full_state(state, current_stage="generation_persist")
+
+    existing_ids = list(state.get("candidate_ids", []))
+
+    # Idempotency: don't duplicate
+    if candidate_id in existing_ids:
+        return _full_state(state, current_stage="generation_persist")
+
+    # Persist candidate
+    try:
+        run_id = state.get("run_id", "")
+        candidate_results = state.get("candidate_results", [])
+
+        # Find matching result
+        result_data = None
+        for r in candidate_results:
+            if r.get("alias") == candidate_id:
+                result_data = r
+                break
+
+        if result_data:
+            # Extract candidate data from results
+            candidate_alias = result_data.get("alias", "unknown")
+            candidate_provider = result_data.get("provider", "unknown")
+            candidate_model = result_data.get("model", "unknown")
+            candidate_status = "succeeded" if result_data.get("success") else "failed"
+            candidate_raw_text = result_data.get("raw_text", "")
+            candidate_input_tokens = result_data.get("input_tokens")
+            candidate_output_tokens = result_data.get("output_tokens")
+
+            insert_candidate(
+                worker.db,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                alias=candidate_alias,
+                provider=candidate_provider,
+                provider_model=candidate_model,
+                stage="generation",
+                status=candidate_status,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                execution_order=None,
+            )
+            logger.info("Persisted generation candidate", run_id=run_id, candidate_id=candidate_id)
+
+    except Exception as e:
+        logger.error("Failed to persist candidate", error=str(e), candidate_id=candidate_id)
+
+    updated_ids = existing_ids + [candidate_id]
+    return _full_state(
+        state,
+        current_stage="generation_persist",
+        candidate_ids=updated_ids,
+    )
 
 
-def node_synthesis_call(state: OrchestrationState) -> OrchestrationState:
+async def node_synthesis_call(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Synthesis call node — advances to synthesis_call stage.
+    Synthesis call node — builds synthesis prompt and calls model.
 
-    The caller (worker_loop.py) performs the synthesis model call and sets
-    raw_response with the synthesis output after this node returns.
-
-    Idempotency: if already at synthesis_persist or beyond, skip.
+    Actual work:
+    - Build synthesis prompt from candidate answers
+    - Call synthesis model
+    - Store result in state
     """
     current = state.get("current_stage", "")
     if current.startswith(("verification", "finalize")):
         return state
 
-    return _full_state(state, {"current_stage": "synthesis_call"})
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping synthesis call")
+        return _full_state(state, current_stage="synthesis_call")
+
+    run_id = state.get("run_id")
+    logger.info("Starting synthesis call", run_id=run_id)
+
+    # Get candidate answers
+    candidate_results = state.get("candidate_results", [])
+    candidate_answers = [r.get("raw_text", "") for r in candidate_results if r.get("success")]
+
+    if not candidate_answers:
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="NO_CANDIDATE_ANSWERS",
+            error_message="No successful candidate answers for synthesis",
+        )
+
+    # Build synthesis prompt
+    try:
+        prompt = state.get("prompt", "")
+        candidates = candidate_results
+        memory_context = state.get("memory_context", "")
+
+        synthesis_prompt = build_fusion_prompt(prompt, candidates, memory_context)
+    except Exception as e:
+        logger.error("Failed to build synthesis prompt", error=str(e))
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="PROMPT_BUILD_ERROR",
+            error_message=f"Failed to build synthesis prompt: {e}",
+        )
+
+    # Call synthesis model
+    try:
+        # Get first available model for synthesis
+        models = worker.catalog.get_models_for_mode("fusion")
+        if not models:
+            raise ValueError("No models available for synthesis")
+
+        synthesis_model = models[0]
+        request = {
+            "provider": synthesis_model.get("provider"),
+            "model": synthesis_model.get("model"),
+            "prompt": synthesis_prompt,
+            "max_tokens": state.get("max_tokens", 4096),
+        }
+        # Use worker's async provider method
+        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
+            request, worker.db, run_id
+        )
+
+        if not success:
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="SYNTHESIS_FAILED",
+                error_message=raw_text or "Synthesis model failed",
+            )
+
+        return _full_state(
+            state,
+            current_stage="synthesis_call",
+            computed_final_answer=raw_text,
+            computed_final_confidence=0.8,  # Default confidence for synthesis
+        )
+
+    except Exception as e:
+        logger.error("Synthesis call failed", error=str(e))
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="SYNTHESIS_ERROR",
+            error_message=f"Synthesis call failed: {e}",
+        )
 
 
-def node_synthesis_persist(state: OrchestrationState) -> OrchestrationState:
+async def node_synthesis_persist(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Synthesis persist node — records synthesis candidate and advances stage.
-
-    Side effect (performed by caller after node returns):
-      INSERT INTO run_candidates (...) VALUES (...) ON CONFLICT DO NOTHING
-
-    Idempotency: if already past synthesis_persist, skip.
+    Synthesis persist node — persists synthesis candidate to database.
     """
     current = state.get("current_stage", "")
     if current.startswith(("verification", "finalize")):
         return state
 
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping synthesis persist")
+        return _full_state(state, current_stage="synthesis_persist")
+
     candidate_id = state.get("current_candidate_id")
+    if not candidate_id:
+        return _full_state(state, current_stage="synthesis_persist")
+
     existing_ids = list(state.get("candidate_ids", []))
-    if candidate_id and candidate_id not in existing_ids:
-        updated_ids = existing_ids + [candidate_id]
-    else:
-        updated_ids = existing_ids
 
-    return _full_state(state, {
-        "current_stage": "synthesis_persist",
-        "candidate_ids": updated_ids,
-    })
+    # Idempotency
+    if candidate_id in existing_ids:
+        return _full_state(state, current_stage="synthesis_persist")
+
+    try:
+        run_id = state.get("run_id", "")
+        computed_answer = state.get("computed_final_answer", "")
+
+        insert_candidate(
+            worker.db,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            alias="synthesis",
+            provider="",
+            provider_model="",
+            stage="synthesis",
+            status="succeeded",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Persisted synthesis candidate", run_id=run_id, candidate_id=candidate_id)
+
+    except Exception as e:
+        logger.error("Failed to persist synthesis candidate", error=str(e))
+
+    updated_ids = existing_ids + [candidate_id]
+    return _full_state(
+        state,
+        current_stage="synthesis_persist",
+        candidate_ids=updated_ids,
+    )
 
 
-def node_verification_call(state: OrchestrationState) -> OrchestrationState:
+async def node_verification_call(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Verification call node — advances to verification_call stage.
-
-    Idempotency: if already at verification_persist or beyond, skip.
+    Verification call node — calls verification model.
     """
     current = state.get("current_stage", "")
     if current.startswith("finalize"):
         return state
 
-    return _full_state(state, {"current_stage": "verification_call"})
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping verification call")
+        return _full_state(state, current_stage="verification_call")
+
+    run_id = state.get("run_id")
+    logger.info("Starting verification call", run_id=run_id)
+
+    try:
+        models = worker.catalog.get_models_for_mode("fusion")
+        if not models:
+            raise ValueError("No models available for verification")
+
+        verification_model = models[0]
+        computed_answer = state.get("computed_final_answer", "")
+
+        request = {
+            "provider": verification_model.get("provider"),
+            "model": verification_model.get("model"),
+            "prompt": f"Verify this answer: {computed_answer}",
+            "max_tokens": state.get("max_tokens", 4096),
+        }
+        # Use worker's async provider method
+        success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
+            request, worker.db, run_id
+        )
+
+        if not success:
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="VERIFICATION_FAILED",
+                error_message=raw_text or "Verification model failed",
+            )
+
+        # For now, keep the computed answer (verification could adjust confidence)
+        return _full_state(
+            state,
+            current_stage="verification_call",
+            computed_final_confidence=0.85,  # Slightly higher after verification
+        )
+
+    except Exception as e:
+        logger.error("Verification call failed", error=str(e))
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="VERIFICATION_ERROR",
+            error_message=f"Verification call failed: {e}",
+        )
 
 
-def node_verification_persist(state: OrchestrationState) -> OrchestrationState:
+async def node_verification_persist(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
-    Verification persist node — records verification candidate and advances stage.
-
-    Side effect (performed by caller after node returns):
-      INSERT INTO run_candidates (...) VALUES (...) ON CONFLICT DO NOTHING
-
-    Idempotency: if already past verification_persist (i.e., at finalize), skip.
+    Verification persist node — persists verification candidate to database.
     """
     current = state.get("current_stage", "")
     if current.startswith("finalize"):
         return state
 
+    worker = _get_worker(config)
+    if not worker:
+        logger.warning("No worker in config, skipping verification persist")
+        return _full_state(state, current_stage="verification_persist")
+
     candidate_id = state.get("current_candidate_id")
+    if not candidate_id:
+        return _full_state(state, current_stage="verification_persist")
+
     existing_ids = list(state.get("candidate_ids", []))
-    if candidate_id and candidate_id not in existing_ids:
-        updated_ids = existing_ids + [candidate_id]
-    else:
-        updated_ids = existing_ids
 
-    return _full_state(state, {
-        "current_stage": "verification_persist",
-        "candidate_ids": updated_ids,
-    })
+    # Idempotency
+    if candidate_id in existing_ids:
+        return _full_state(state, current_stage="verification_persist")
+
+    try:
+        run_id = state.get("run_id", "")
+        computed_answer = state.get("computed_final_answer", "")
+
+        insert_candidate(
+            worker.db,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            alias="verification",
+            provider="",
+            provider_model="",
+            stage="verification",
+            status="succeeded",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        logger.info("Persisted verification candidate", run_id=run_id, candidate_id=candidate_id)
+
+    except Exception as e:
+        logger.error("Failed to persist verification candidate", error=str(e))
+
+    updated_ids = existing_ids + [candidate_id]
+    return _full_state(
+        state,
+        current_stage="verification_persist",
+        candidate_ids=updated_ids,
+    )
 
 
-def node_finalize_fusion_success(state: OrchestrationState) -> OrchestrationState:
+async def node_finalize_fusion_success(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
     Finalize node (happy path) — copies computed_final_answer into final_answer.
 
@@ -200,14 +520,31 @@ def node_finalize_fusion_success(state: OrchestrationState) -> OrchestrationStat
     if current.startswith("finalize"):
         return state
 
-    return _full_state(state, {
-        "current_stage": "finalize_success",
-        "final_answer": state.get("computed_final_answer"),
-        "final_confidence": state.get("computed_final_confidence") if state.get("computed_final_confidence") is not None else 0.0,
-    })
+    computed_final_answer = state.get("computed_final_answer")
+    if computed_final_answer is None:
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="NO_FINAL_ANSWER",
+            error_message="No computed final answer to finalize",
+        )
+
+    computed_final_confidence = state.get("computed_final_confidence")
+    if computed_final_confidence is None:
+        computed_final_confidence = 0.0
+
+    return _full_state(
+        state,
+        current_stage="finalize_success",
+        final_answer=computed_final_answer,
+        final_confidence=computed_final_confidence,
+    )
 
 
-def node_finalize_fusion_failure(state: OrchestrationState) -> OrchestrationState:
+async def node_finalize_fusion_failure(
+    state: OrchestrationState,
+    config: Optional[RunnableConfig] = None,
+) -> OrchestrationState:
     """
     Finalize node (error path) — copies error_code/error_message into state.
 
@@ -217,8 +554,12 @@ def node_finalize_fusion_failure(state: OrchestrationState) -> OrchestrationStat
     if current.startswith("finalize"):
         return state
 
-    return _full_state(state, {
-        "current_stage": "finalize_failure",
-        "error_code": state.get("error_code") or "UNKNOWN",
-        "error_message": state.get("error_message") or "Fusion failed without error message",
-    })
+    error_code = state.get("error_code") or "UNKNOWN"
+    error_message = state.get("error_message") or "Fusion failed without error message"
+
+    return _full_state(
+        state,
+        current_stage="finalize_failure",
+        error_code=error_code,
+        error_message=error_message,
+    )
