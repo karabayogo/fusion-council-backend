@@ -300,7 +300,7 @@ async def node_peer_review_call(
         request = {
             "provider": review_peer.get("provider"),
             "model": review_peer.get("model"),
-            "prompt": f"Review these first opinions:\n\n" + "\n\n".join(first_opinions),
+            "prompt": "Review these first opinions:\n\n" + "\n\n".join(first_opinions),
             "max_tokens": state.get("max_tokens", 4096),
         }
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
