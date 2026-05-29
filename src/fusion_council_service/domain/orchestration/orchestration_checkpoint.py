@@ -94,47 +94,23 @@ async def ensure_langgraph_checkpoint_tables(conn: "asyncpg.Connection") -> None
     """
     Ensure LangGraph checkpoint/thread tables exist in the Postgres database.
 
-    Creates:
-      - checkpoint (LangGraph internal — stores graph snapshots per thread_id/checkpoint_ns)
-      - checkpoint_metadata (LangGraph internal — thread metadata)
+    Delegates to AsyncPostgresSaver.setup() which creates the canonical
+    LangGraph internal tables (checkpoints, checkpoint_writes, checkpoint_blobs,
+    checkpoint_migrations). Do NOT manually create these tables with raw SQL —
+    the schema is managed by the langgraph-checkpoint-postgres package and
+    drift between manual DDL and package migrations causes silent failures.
 
-    Idempotent: uses CREATE TABLE IF NOT EXISTS.
+    Idempotent: saver.setup() uses IF NOT EXISTS internally.
     """
-    import asyncpg
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
     try:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS checkpoint (
-                thread_id   TEXT NOT NULL,
-                checkpoint_ns TEXT NOT NULL DEFAULT '',
-                checkpoint_id TEXT NOT NULL,
-                parent_checkpoint_id TEXT,
-                state       JSONB NOT NULL,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
-            )
-            """
-        )
-    except asyncpg.DuplicateTableError:
-        pass  # already exists
-
-    try:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS checkpoint_metadata (
-                thread_id      TEXT NOT NULL PRIMARY KEY,
-                checkpoint_ns   TEXT NOT NULL DEFAULT '',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                metadata       JSONB
-            )
-            """
-        )
-    except asyncpg.DuplicateTableError:
-        pass  # already exists
-
-    logger.info("ensure_langgraph_checkpoint_tables: tables verified/created")
+        saver = AsyncPostgresSaver(conn)
+        await saver.setup()
+        logger.info("ensure_langgraph_checkpoint_tables: saver.setup() completed")
+    except Exception as exc:
+        logger.error(f"ensure_langgraph_checkpoint_tables: saver.setup() failed: {exc}")
+        raise
 
 
 def check_engine_version_compatible(stored_version: str, current_version: str) -> None:
@@ -151,7 +127,7 @@ def check_engine_version_compatible(stored_version: str, current_version: str) -
         )
 
 
-def get_checkpoint_snapshot(
+async def get_checkpoint_snapshot(
     saver: "AsyncPostgresSaver",
     config: dict,
 ) -> dict | None:
@@ -176,15 +152,14 @@ def get_checkpoint_snapshot(
         saver = get_checkpoint_saver()
         if saver is not None:
             config = {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}
-            snapshot = get_checkpoint_snapshot(saver, config)
+            snapshot = await get_checkpoint_snapshot(saver, config)
             if snapshot is not None:
                 # resume from snapshot["run_id"], etc.
     """
-    import asyncio
-
     try:
-        # aget is the async load method on AsyncPostgresSaver
-        checkpoint = asyncio.run(saver.aget(config)) if asyncio.iscoroutinefunction(saver.aget) else None
+        # Use await directly — do NOT use asyncio.run() which crashes
+        # inside an already-running async event loop.
+        checkpoint = await saver.aget(config)
     except Exception:
         return None
 

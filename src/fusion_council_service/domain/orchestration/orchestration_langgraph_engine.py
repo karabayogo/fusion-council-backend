@@ -295,6 +295,12 @@ class LangGraphEngine:
             # For modes without a dedicated graph, use single (fallback)
             graph = _graph_single()
 
+        # Inject worker into config so nodes can access provider registry, catalog, DB.
+        # LangGraph passes RunnableConfig as the second argument to every node function.
+        worker = worker_ctx.get("worker")
+        if worker is not None:
+            langgraph_config.setdefault("configurable", {})["worker"] = worker
+
         if is_resume and saver is not None:
             # Resume path: replay from last checkpoint
             saved = await saver.aget(langgraph_config)

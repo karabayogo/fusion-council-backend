@@ -1,87 +1,49 @@
 """
-LangGraph nodes for single-mode orchestration.
+LangGraph fine-grained nodes for single-mode orchestration (Option A).
 
-Design: coarse-grained wrapper nodes (Option B).
-Each node is a pure function: OrchestrationState -> OrchestrationState.
-No direct DB or API calls — side effects are performed by the caller (worker_loop.py)
-after the node returns, preserving idempotency and replay safety.
+Each async node performs its specific stage of work with idempotency guards:
+  node_prepare_run      → validates run, selects model
+  node_generation_call  → calls model API via provider registry
+  node_generation_persist → persists candidate to run_candidates
+  node_finalize_success → writes final_answer, emits events
+  node_finalize_failure → writes error state, emits failure event
 
-IMPORTANT — LangGraph channel semantics for total=False TypedDict:
-  Every node MUST return ALL fields of OrchestrationState on every invocation.
-  Missing fields default to None in the channel, which then propagates to all
-  subsequent nodes in the same step. This is a fundamental LangGraph behavior,
-  NOT a bug. Nodes that return partial dicts will silently zero out missing fields.
+Worker dependencies are passed through LangGraph's RunnableConfig.configurable dict.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Optional
+
+from fusion_council_service.clock import utc_now_iso
+from fusion_council_service.ids import new_candidate_id
+from fusion_council_service.logging_utils import get_logger
 
 if TYPE_CHECKING:
+    from langgraph.types import RunnableConfig
+
     from fusion_council_service.domain.orchestration.orchestration_state import (
         OrchestrationState,
     )
 
+logger = get_logger("fusion_council_service.orchestration.nodes_single")
 
-def node_prepare_run(state: OrchestrationState) -> OrchestrationState:
-    """
-    Entry node — validates run exists and sets initial stage.
-
-    Idempotency: if already past prepare (in generation or finalize), return unchanged.
-    Error routing: if run_id is absent/empty, sets finalize_failure stage.
-    """
-    run_id = state.get("run_id")
-    if not run_id:
-        return {
-            **state,
-            "run_id": state.get("run_id"),
-            "mode": state.get("mode"),
-            "engine": state.get("engine"),
-            "engine_version": state.get("engine_version"),
-            "thread_id": state.get("thread_id"),
-            "checkpoint_namespace": state.get("checkpoint_namespace"),
-            "resume_count": state.get("resume_count"),
-            "current_stage": "finalize_failure",
-            "candidate_ids": state.get("candidate_ids", []),
-            "final_answer": state.get("final_answer"),
-            "final_confidence": state.get("final_confidence"),
-            "error_code": "RUN_ID_MISSING",
-            "error_message": "run_id not found in state — cannot proceed",
-            "updated_at": state.get("updated_at"),
-            "raw_response": state.get("raw_response"),
-            "candidate_summaries": state.get("candidate_summaries"),
-            "computed_final_answer": state.get("computed_final_answer"),
-            "computed_final_confidence": state.get("computed_final_confidence"),
-        }
-
-    # Idempotency guard — skip if already advanced past prepare_run
-    current = state.get("current_stage", "")
-    if current.startswith(("generation", "finalize")):
-        return state
-
-    return {
-        **state,
-        "current_stage": "prepare_run",
-    }
+# Default deadline for single-mode runs (seconds)
+SINGLE_DEADLINE_SEC = 300
 
 
-def node_generation_call(state: OrchestrationState) -> OrchestrationState:
-    """
-    Generation call node — advances to generation_call stage.
+def _get_worker(config: RunnableConfig) -> Optional[object]:
+    """Extract Worker from configurable dict."""
+    if config and "configurable" in config:
+        return config["configurable"].get("worker")
+    return None
 
-    No side effects here. The caller (worker_loop.py) performs the actual
-    model API call and populates current_candidate_id in state after this node returns.
-    Keeping the node pure ensures replay safety.
 
-    IMPORTANT: Must forward ALL fields (see module docstring).
-    """
-    current = state.get("current_stage", "")
-
-    # Idempotency — if already past generation_call, skip
-    if current.startswith(("generation_persist", "finalize")):
-        return state
-
-    return {
-        **state,
+def _full_state(state: OrchestrationState, **overrides: object) -> OrchestrationState:
+    """Return complete OrchestrationState — required for total=False TypedDict."""
+    result: OrchestrationState = {  # type: ignore[typeddict-item]
         "run_id": state.get("run_id"),
         "mode": state.get("mode"),
         "engine": state.get("engine"),
@@ -89,8 +51,9 @@ def node_generation_call(state: OrchestrationState) -> OrchestrationState:
         "thread_id": state.get("thread_id"),
         "checkpoint_namespace": state.get("checkpoint_namespace"),
         "resume_count": state.get("resume_count"),
-        "current_stage": "generation_call",
+        "current_stage": state.get("current_stage"),
         "candidate_ids": state.get("candidate_ids", []),
+        "current_candidate_id": state.get("current_candidate_id"),
         "final_answer": state.get("final_answer"),
         "final_confidence": state.get("final_confidence"),
         "error_code": state.get("error_code"),
@@ -101,120 +64,333 @@ def node_generation_call(state: OrchestrationState) -> OrchestrationState:
         "computed_final_answer": state.get("computed_final_answer"),
         "computed_final_confidence": state.get("computed_final_confidence"),
     }
+    result.update(overrides)  # type: ignore[arg-type]
+    return result
 
 
-def node_generation_persist(state: OrchestrationState) -> OrchestrationState:
-    """
-    Persist node — appends current_candidate_id to candidate_ids and advances stage.
+# ──────────────────────────────────────────────────────────────────
+# Node implementations
+# ──────────────────────────────────────────────────────────────────
 
-    Side effect (performed by caller after node returns):
-      INSERT INTO run_candidates (...) VALUES (...) ON CONFLICT DO NOTHING
+async def node_prepare_run(
+    state: OrchestrationState,
+    config: RunnableConfig,
+) -> OrchestrationState:
+    """Entry node — validates run_id, selects model, computes budget."""
+    run_id = state.get("run_id")
+    if not run_id:
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="RUN_ID_MISSING",
+            error_message="run_id not found in state",
+        )
 
-    Idempotency: if candidate_id already in candidate_ids list, skip adding it again.
-    Idempotency: if already past generation_persist, skip.
-    """
+    current = state.get("current_stage", "")
+    if current.startswith(("generation", "finalize")):
+        return state  # already past prepare — replay guard
+
+    worker = _get_worker(config)
+    if worker is None:
+        logger.warning("node_prepare_run: no worker in config", run_id=run_id)
+        return _full_state(state, current_stage="prepare_run")
+
+    try:
+        from fusion_council_service.domain.budget import (
+            compute_budget,
+            select_models_for_mode,
+        )
+
+        mode = state.get("mode", "single")
+        # select_models_for_mode(mode, catalog)
+        models = select_models_for_mode(mode, worker._catalog)
+        if not models:
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="NO_MODELS",
+                error_message=f"No models for mode {mode}",
+            )
+        # compute_budget(mode, deadline_seconds)
+        budget = compute_budget(mode, SINGLE_DEADLINE_SEC)
+        logger.info(
+            "node_prepare_run: models=%d stages=%d",
+            len(models),
+            len(budget.stages),
+            run_id=run_id,
+        )
+
+        return _full_state(state, current_stage="prepare_run")
+    except Exception as exc:
+        logger.error(f"node_prepare_run failed: {exc}", run_id=run_id)
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="PREPARE_RUN_ERROR",
+            error_message=str(exc),
+        )
+
+
+async def node_generation_call(
+    state: OrchestrationState,
+    config: RunnableConfig,
+) -> OrchestrationState:
+    """Call model API to generate a response for single mode."""
+    current = state.get("current_stage", "")
+    if current.startswith(("generation_persist", "finalize")):
+        return state  # already past — replay guard
+
+    worker = _get_worker(config)
+    if worker is None:
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="NO_WORKER",
+            error_message="No worker for generation call",
+        )
+
+    run_id = state["run_id"]
+    try:
+        from fusion_council_service.domain.model_selection import (
+            select_healthy_stage_model,
+        )
+        from fusion_council_service.domain.types import ProviderGenerateRequest
+        from fusion_council_service.domain.structured_output import (
+            invoke_structured_or_freetext,
+        )
+
+        db = worker._get_db()
+        # select_healthy_stage_model(*, db, catalog, run_id, role_order, avoid_aliases)
+        model_info = select_healthy_stage_model(
+            db=db,
+            catalog=worker._catalog,
+            run_id=run_id,
+            role_order=["generation"],
+        )
+        if model_info is None:
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="NO_HEALTHY_MODEL",
+                error_message="No healthy model for generation",
+            )
+
+        alias = model_info.get("alias", "unknown")
+        provider_name = model_info.get("provider", "")
+        provider_model = model_info.get("provider_model", "")
+
+        candidate_id = new_candidate_id()
+        started_at = utc_now_iso()
+
+        request = ProviderGenerateRequest(
+            alias=alias,
+            provider=provider_name,
+            provider_model=provider_model,
+            user_prompt=state.get("computed_final_answer") or "",
+            system_prompt="",
+            max_output_tokens=4096,
+            temperature=0.7,
+        )
+
+        # Model call is blocking — run in thread pool
+        loop = asyncio.get_running_loop()
+
+        def _call_model():
+            return invoke_structured_or_freetext(
+                request,
+                worker._registry,
+                response_model=type(None),
+            )
+
+        result = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), _call_model)
+
+        finished_at = utc_now_iso()
+        raw_response = {
+            "model": provider_model,
+            "choices": [{"message": {"role": "assistant", "content": result.raw_text}}],
+            "usage": {
+                "prompt_tokens": result.input_tokens or 0,
+                "completion_tokens": result.output_tokens or 0,
+            },
+        }
+
+        return _full_state(
+            state,
+            current_stage="generation_call",
+            current_candidate_id=candidate_id,
+            raw_response=raw_response,
+            computed_final_answer=result.raw_text,
+            computed_final_confidence=0.85,
+        )
+    except Exception as exc:
+        logger.error(f"node_generation_call failed: {exc}", run_id=run_id)
+        return _full_state(
+            state,
+            current_stage="finalize_failure",
+            error_code="GENERATION_ERROR",
+            error_message=str(exc),
+        )
+
+
+async def node_generation_persist(
+    state: OrchestrationState,
+    config: RunnableConfig,
+) -> OrchestrationState:
+    """Persist candidate to run_candidates table (idempotent)."""
+    current = state.get("current_stage", "")
+    if current.startswith("finalize"):
+        return state
+
+    worker = _get_worker(config)
     candidate_id = state.get("current_candidate_id")
-    existing_ids = state.get("candidate_ids", [])
+    existing_ids: list[str] = list(state.get("candidate_ids", []))
 
-    # Idempotency — don't duplicate if already persisted on prior run
     if candidate_id and candidate_id not in existing_ids:
         updated_ids = existing_ids + [candidate_id]
     else:
-        updated_ids = list(existing_ids)
+        updated_ids = existing_ids
 
-    # Idempotency — if already past generation_persist, skip
+    if worker is not None and candidate_id:
+        try:
+            from fusion_council_service.domain.candidate_repository import (
+                insert_candidate,
+            )
+            from fusion_council_service.domain.event_emitter import (
+                emit_candidate_completed,
+            )
+
+            db = worker._get_db()
+            run_id = state["run_id"]
+            raw = state.get("raw_response") or {}
+            model_name = "unknown"
+            if isinstance(raw, dict):
+                model_name = raw.get("model", "unknown")
+
+            insert_candidate(
+                db,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                alias="single-model",
+                provider="langgraph",
+                provider_model=model_name,
+                stage="generation",
+                status="succeeded",
+                created_at=utc_now_iso(),
+            )
+
+            emit_candidate_completed(
+                db,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                alias="single-model",
+                stage="generation",
+            )
+            logger.info(f"Candidate {candidate_id} persisted", run_id=run_id)
+        except Exception as exc:
+            logger.error(f"node_generation_persist failed: {exc}", run_id=run_id)
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="PERSIST_ERROR",
+                error_message=str(exc),
+            )
+
+    return _full_state(
+        state,
+        current_stage="generation_persist",
+        candidate_ids=updated_ids,
+    )
+
+
+async def node_finalize_success(
+    state: OrchestrationState,
+    config: RunnableConfig,
+) -> OrchestrationState:
+    """Write final_answer, update runs table, emit completion event."""
     current = state.get("current_stage", "")
     if current.startswith("finalize"):
         return state
 
-    return {
-        **state,
-        "run_id": state.get("run_id"),
-        "mode": state.get("mode"),
-        "engine": state.get("engine"),
-        "engine_version": state.get("engine_version"),
-        "thread_id": state.get("thread_id"),
-        "checkpoint_namespace": state.get("checkpoint_namespace"),
-        "resume_count": state.get("resume_count"),
-        "current_stage": "generation_persist",
-        "candidate_ids": updated_ids,
-        "final_answer": state.get("final_answer"),
-        "final_confidence": state.get("final_confidence"),
-        "error_code": state.get("error_code"),
-        "error_message": state.get("error_message"),
-        "updated_at": state.get("updated_at"),
-        "raw_response": state.get("raw_response"),
-        "candidate_summaries": state.get("candidate_summaries"),
-        "computed_final_answer": state.get("computed_final_answer"),
-        "computed_final_confidence": state.get("computed_final_confidence"),
-    }
+    worker = _get_worker(config)
+    final_answer = state.get("computed_final_answer") or ""
+    final_confidence = float(state.get("computed_final_confidence") or 0.0)
+
+    if worker is not None:
+        try:
+            from fusion_council_service.domain.event_emitter import (
+                emit_run_completed,
+            )
+            from fusion_council_service.domain.run_repository import (
+                update_run_status,
+            )
+
+            db = worker._get_db()
+            run_id = state["run_id"]
+
+            update_run_status(
+                db,
+                run_id,
+                "succeeded",
+                final_answer=final_answer,
+                finished_at=utc_now_iso(),
+            )
+            emit_run_completed(db, run_id, final_answer, final_confidence)
+        except Exception as exc:
+            logger.error(f"node_finalize_success DB write failed: {exc}", run_id=state.get("run_id"))
+            return _full_state(
+                state,
+                current_stage="finalize_failure",
+                error_code="FINALIZE_DB_ERROR",
+                error_message=str(exc),
+            )
+
+    return _full_state(
+        state,
+        current_stage="finalize_success",
+        final_answer=final_answer,
+        final_confidence=final_confidence,
+    )
 
 
-def node_finalize_success(state: OrchestrationState) -> OrchestrationState:
-    """
-    Finalize node (happy path) — copies computed_final_answer into final_answer.
-
-    Idempotency guard: if already in a finalize stage, return unchanged.
-    The current_stage check is the authoritative replay guard — final_answer may
-    already be set on a prior failed invoke that still reached this node.
-    """
-    # Idempotency — if already in a finalize state, skip
+async def node_finalize_failure(
+    state: OrchestrationState,
+    config: RunnableConfig,
+) -> OrchestrationState:
+    """Write error state to runs table, emit failure event."""
     current = state.get("current_stage", "")
     if current.startswith("finalize"):
         return state
 
-    return {
-        **state,
-        "run_id": state.get("run_id"),
-        "mode": state.get("mode"),
-        "engine": state.get("engine"),
-        "engine_version": state.get("engine_version"),
-        "thread_id": state.get("thread_id"),
-        "checkpoint_namespace": state.get("checkpoint_namespace"),
-        "resume_count": state.get("resume_count"),
-        "current_stage": "finalize_success",
-        "candidate_ids": state.get("candidate_ids", []),
-        "final_answer": state.get("computed_final_answer"),
-        "final_confidence": state.get("computed_final_confidence", 0.0),
-        "error_code": state.get("error_code"),
-        "error_message": state.get("error_message"),
-        "updated_at": state.get("updated_at"),
-        "raw_response": state.get("raw_response"),
-        "candidate_summaries": state.get("candidate_summaries"),
-        "computed_final_answer": state.get("computed_final_answer"),
-        "computed_final_confidence": state.get("computed_final_confidence"),
-    }
+    worker = _get_worker(config)
+    error_code = state.get("error_code", "UNKNOWN")
+    error_message = state.get("error_message", "Finalization failed")
 
+    if worker is not None:
+        try:
+            from fusion_council_service.domain.event_emitter import (
+                emit_run_failed,
+            )
+            from fusion_council_service.domain.run_repository import (
+                update_run_status,
+            )
 
-def node_finalize_failure(state: OrchestrationState) -> OrchestrationState:
-    """
-    Finalize node (error path) — copies error_code/error_message into state.
+            db = worker._get_db()
+            run_id = state["run_id"]
 
-    Idempotency: if already in a finalize stage, return unchanged.
-    """
-    # Idempotency — already finalized
-    current = state.get("current_stage", "")
-    if current.startswith("finalize"):
-        return state
+            update_run_status(
+                db,
+                run_id,
+                "failed",
+                error_code=error_code,
+                finished_at=utc_now_iso(),
+            )
+            emit_run_failed(db, run_id=run_id, error_code=error_code, error_message=error_message)
+        except Exception as exc:
+            logger.error(f"node_finalize_failure DB write failed: {exc}", run_id=state.get("run_id"))
 
-    return {
-        **state,
-        "run_id": state.get("run_id"),
-        "mode": state.get("mode"),
-        "engine": state.get("engine"),
-        "engine_version": state.get("engine_version"),
-        "thread_id": state.get("thread_id"),
-        "checkpoint_namespace": state.get("checkpoint_namespace"),
-        "resume_count": state.get("resume_count"),
-        "current_stage": "finalize_failure",
-        "candidate_ids": state.get("candidate_ids", []),
-        "final_answer": state.get("final_answer"),
-        "final_confidence": state.get("final_confidence"),
-        "error_code": state.get("error_code", "UNKNOWN"),
-        "error_message": state.get("error_message", "Finalization failed without error message"),
-        "updated_at": state.get("updated_at"),
-        "raw_response": state.get("raw_response"),
-        "candidate_summaries": state.get("candidate_summaries"),
-        "computed_final_answer": state.get("computed_final_answer"),
-        "computed_final_confidence": state.get("computed_final_confidence"),
-    }
+    return _full_state(
+        state,
+        current_stage="finalize_failure",
+        error_code=error_code,
+        error_message=error_message,
+    )

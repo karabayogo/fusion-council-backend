@@ -187,7 +187,7 @@ class TestGetOrCreateThreadId:
 
 
 class TestEnsureLanggraphCheckpointTables:
-    """RED tests for ensure_langgraph_checkpoint_tables()."""
+    """Tests for ensure_langgraph_checkpoint_tables() — delegates to AsyncPostgresSaver.setup()."""
 
     def test_function_exists_and_is_async(self):
         """ensure_langgraph_checkpoint_tables must be an async function."""
@@ -197,21 +197,34 @@ class TestEnsureLanggraphCheckpointTables:
         )
         assert inspect.iscoroutinefunction(ensure_langgraph_checkpoint_tables)
 
-    def test_calls_conn_execute_when_tables_do_not_exist(self):
-        """Must call CREATE TABLE IF NOT EXISTS for LangGraph checkpoints."""
+    def test_delegates_to_saver_setup(self):
+        """
+        ensure_langgraph_checkpoint_tables() must delegate to AsyncPostgresSaver.setup()
+        instead of running raw CREATE TABLE SQL. This ensures LangGraph manages its own
+        schema migrations — manual DDL drifts from the canonical package schema.
+        """
         from fusion_council_service.domain.orchestration.orchestration_checkpoint import (
             ensure_langgraph_checkpoint_tables,
         )
 
-        conn = AsyncMock()
-        conn.execute = AsyncMock()
+        # Mock AsyncPostgresSaver.setup — verify it gets called.
+        # AsyncPostgresSaver is imported inside ensure_langgraph_checkpoint_tables()
+        # from langgraph.checkpoint.postgres.aio, so patch at that location.
+        mock_saver = MagicMock()
+        mock_saver.setup = AsyncMock()
 
-        asyncio.run(ensure_langgraph_checkpoint_tables(conn))
+        with patch(
+            "langgraph.checkpoint.postgres.aio.AsyncPostgresSaver",
+            return_value=mock_saver,
+        ):
+            conn = AsyncMock()
+            asyncio.run(ensure_langgraph_checkpoint_tables(conn))
 
-        assert conn.execute.called
-        call_str = str(conn.execute.call_args)
-        # Should create langgraph checkpoint tables
-        assert "CREATE" in call_str.upper()
+        # saver.setup() must be called — this is the canonical table init path
+        assert mock_saver.setup.called, (
+            "ensure_langgraph_checkpoint_tables() must call saver.setup(), "
+            "not raw CREATE TABLE SQL"
+        )
 
 
 class TestCheckEngineVersionCompatible:

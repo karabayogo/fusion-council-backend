@@ -37,6 +37,8 @@ from fusion_council_service.logging_utils import get_logger
 from fusion_council_service.model_catalog import ModelCatalog
 from fusion_council_service.providers.registry import ProviderRegistry
 
+# LangGraph-aware stale run recovery (scans run_orchestration_state, not runs.status).
+# Lazy-imported inside _recover_langgraph_stale_runs() to avoid import-time asyncpg dependency.
 logger = get_logger("fusion_council_service.worker_loop")
 
 # Thread pool for blocking provider calls
@@ -129,6 +131,35 @@ class Worker:
         recovered = reset_stale_running_runs(db, self._stale_run_threshold_seconds)
         if recovered > 0:
             logger.info(f"Recovered {recovered} stale run(s) stuck in 'running' status")
+
+    async def _recover_langgraph_stale_runs(self) -> None:
+        """
+        LangGraph-aware stale run recovery — scans run_orchestration_state for
+        runs stuck in orchestration_status='resumed' past the stale threshold.
+
+        This is the LangGraph equivalent of _recover_stale_runs(). The legacy
+        method only touches runs.status; this one recovers orphans in the
+        LangGraph checkpoint layer.
+
+        Called on worker idle cycles (alongside legacy recovery) and on startup
+        after the AsyncPostgresSaver is confirmed available.
+        """
+        try:
+            from fusion_council_service.startup import _recover_stale_runs as startup_recover
+            # Settings() requires API keys — construct with minimal env for DB URL only
+            from fusion_council_service.config import Settings
+            settings = Settings(
+                SERVICE_API_KEYS="",
+                SERVICE_ADMIN_API_KEYS="",
+            )
+            recovered = await startup_recover(settings)
+            if recovered > 0:
+                logger.info(
+                    f"LangGraph recovery: {recovered} stale run(s) re-queued from "
+                    f"run_orchestration_state"
+                )
+        except Exception as exc:
+            logger.warning(f"LangGraph stale run recovery skipped: {exc}")
 
     def _update_heartbeat(self, run_id: str) -> None:
         db = self._get_db()
@@ -1102,6 +1133,7 @@ class Worker:
                 else:
                     # When idle, recover stale runs (safe — no active processing)
                     self._recover_stale_runs()
+                    await self._recover_langgraph_stale_runs()
                     await asyncio.sleep(self._poll_interval_s)
             except sqlite3.OperationalError as e:
                 logger.error(f"SQLite operational error in poll loop: {e}. Resetting connection.")
