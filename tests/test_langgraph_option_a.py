@@ -131,9 +131,8 @@ class TestLangGraphSingleHappyPath:
             _graph_single,
         )
 
-        import asyncio
         from concurrent.futures import ThreadPoolExecutor
-        from unittest.mock import MagicMock, AsyncMock, patch
+        from unittest.mock import MagicMock, AsyncMock
 
         graph = _graph_single()
         run_id = str(uuid.uuid4())
