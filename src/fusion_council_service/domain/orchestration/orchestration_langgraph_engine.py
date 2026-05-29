@@ -15,7 +15,6 @@ from fusion_council_service.domain.orchestration.orchestration_state_repository 
     upsert_orchestration_state,
 )
 from fusion_council_service.logging_utils import get_logger
-from fusion_council_service.startup import get_checkpoint_saver
 
 if TYPE_CHECKING:
     import asyncpg
