@@ -128,7 +128,7 @@ async def _recover_stale_runs(settings: Settings) -> int:
                 SELECT run_id, thread_id, orchestrator_mode, resume_count, updated_at
                 FROM run_orchestration_state
                 WHERE orchestration_status = 'resumed'
-                  AND updated_at < (NOW() - INTERVAL '1 second' * $1)
+                  AND updated_at::timestamptz < (NOW() - INTERVAL '1 second' * $1)
                 ORDER BY updated_at ASC
                 LIMIT 50
                 """,
