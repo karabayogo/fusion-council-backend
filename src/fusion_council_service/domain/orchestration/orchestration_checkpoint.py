@@ -21,8 +21,8 @@ class OrchestrationEngineVersionMismatch(Exception):
     pass
 
 
-async def get_or_create_thread_id(
-    conn: "asyncpg.Connection",
+def get_or_create_thread_id(
+    db,
     run_id: str,
     mode: str,
 ) -> tuple[dict, bool]:
@@ -34,7 +34,7 @@ async def get_or_create_thread_id(
     is_resume: True = replay from last checkpoint (aget_state), False = fresh run (ainvoke)
 
     Decision logic:
-      - Query run_orchestration_state for row WHERE run_id = $1
+      - Query run_orchestration_state for row WHERE run_id = :run_id
       - If row exists AND orchestration_status IN ('resumed', 'started'):
           -> is_resume = True  (orphaned run recovery or mid-run resume)
           -> Return config = {"thread_id": row["thread_id"], "checkpoint_namespace": row["checkpoint_namespace"]}
@@ -44,22 +44,30 @@ async def get_or_create_thread_id(
           -> Generate new checkpoint_ns = f"mode={mode}"
           -> INSERT new row with orchestration_status='started'
           -> Return config = {"thread_id": thread_id, "checkpoint_namespace": checkpoint_ns}
+
+    Works with any db handle (sqlite3.Connection, SQLAlchemy Session, etc.)
+    via execute_sql / execute_sql_one from fusion_council_service.db.
     """
-    rows = await conn.fetch(
+    from fusion_council_service.db import commit_tx, execute_sql, execute_sql_one
+    from fusion_council_service.clock import utc_now_iso
+
+    now = utc_now_iso()
+
+    row = execute_sql_one(
+        db,
         """
         SELECT run_id, thread_id, orchestrator_mode, orchestration_status
         FROM run_orchestration_state
-        WHERE run_id = $1
+        WHERE run_id = :run_id
         """,
-        run_id,
+        {"run_id": run_id},
     )
 
-    if rows and rows[0]["orchestration_status"] in ("resumed", "started"):
+    if row and row.get("orchestration_status") in ("resumed", "started"):
         # Resume path — checkpoint exists and is valid for replay
-        row = rows[0]
         langgraph_config = {
             "thread_id": row["thread_id"],
-            "checkpoint_namespace": row["orchestrator_mode"],
+            "checkpoint_namespace": row.get("orchestrator_mode", f"mode={mode}"),
         }
         logger.info(
             f"get_or_create_thread_id: resume run_id={run_id} "
@@ -71,19 +79,26 @@ async def get_or_create_thread_id(
     thread_id = str(uuid.uuid4())
     checkpoint_ns = f"mode={mode}"
 
-    await conn.execute(
+    execute_sql(
+        db,
         """
         INSERT INTO run_orchestration_state
             (run_id, thread_id, orchestrator_mode, orchestrator_engine, engine_version,
              orchestration_status, resume_count, updated_at, created_at)
-        VALUES ($1, $2, $3, 'langgraph', $4, 'started', 0, NOW(), NOW())
+        VALUES (:run_id, :thread_id, :checkpoint_ns, 'langgraph', :engine_version,
+                'started', 0, :now, :now2)
         ON CONFLICT (run_id) DO NOTHING
         """,
-        run_id,
-        thread_id,
-        checkpoint_ns,
-        LANGGRAPH_ENGINE_VERSION,
+        {
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "checkpoint_ns": checkpoint_ns,
+            "engine_version": LANGGRAPH_ENGINE_VERSION,
+            "now": now,
+            "now2": now,
+        },
     )
+    commit_tx(db)
 
     logger.info(
         f"get_or_create_thread_id: fresh run_id={run_id} "

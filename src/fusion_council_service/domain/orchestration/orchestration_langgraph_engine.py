@@ -432,7 +432,7 @@ class LangGraphEngine:
             )
 
         # Get thread_id and is_resume from checkpoint table
-        langgraph_config, is_resume = await get_or_create_thread_id(db, run_id, mode)
+        langgraph_config, is_resume = get_or_create_thread_id(db, run_id, mode)
 
         # Check engine version compatibility for resume
         if is_resume and previous is not None:

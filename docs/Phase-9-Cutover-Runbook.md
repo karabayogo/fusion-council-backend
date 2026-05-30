@@ -20,11 +20,22 @@ Cut over fusion-council-backend from the legacy orchestration engine to the Lang
 
 | Environment | ArgoCD Application | Engine | Notes |
 |---|---|---|---|
-| `dev` | `fusion-council-api-dev-langgraph` | `langgraph` | New production path |
+| `dev` | `fusion-council-api-dev-langgraph` | `langgraph` → will become production path after cutover |
 | `dev` | `fusion-council-api-dev-legacy` | `legacy` | Source of truth (old) |
 | `dev` | `fusion-council-api-dev-shadow` | `shadow` | Validation / parity gate |
-| `pp` | (same pattern, scaled down) | `legacy` | Pre-production validation |
-| `prod` | (same pattern) | `legacy` | Live traffic |
+| ~~`pp`~~ | KILLED per 2026-05-30 decision | — | pp namespace permanently off-limits |
+| ~~`prod`~~ | KILLED per 2026-05-30 decision | — | prod namespace permanently off-limits |
+
+**Cutover is a single-env `dev` operation**: Flip `ORCHESTRATOR_ENGINE` from `shadow` to `langgraph` in the `dev-langgraph` values after shadow parity passes. No pp/prod promotion needed.
+
+---
+## 2026-05-30 Shadow Bug Fix (RCA)
+
+**Bug**: All `run_shadow_diff` rows show `SHADOW_LANGGRAPH_EXCEPTION: 'Session' object has no attribute 'fetch'`. Shadow validation produces zero valid comparisons.
+
+**Root Cause**: `get_or_create_thread_id()` in `orchestration_checkpoint.py` used `await conn.fetch()` (asyncpg API), but the DB handle passed from `worker_loop.py` → `router.execute()` → `langgraph_engine._run_mode()` is a SQLAlchemy sync `Session` (returned by `new_session()` for PostgreSQL). The `Session` object does not have `.fetch()`.
+
+**Fix** (commit: pending): Rewrote `get_or_create_thread_id()` to use `execute_sql()`/`execute_sql_one()` from `db.py` — sync, works with both SQLAlchemy `Session` and `sqlite3.Connection`. Added TDD regression tests (`test_orchestration_checkpoint_sync.py`, 5 tests + updated `test_orchestration_checkpoint.py`, 13 tests).
 
 ---
 
@@ -93,103 +104,33 @@ A passing report looks like:
 
 ---
 
-### Stage 9.2 — LangGraph Promotion to pp
+### ~~Stage 9.2 — LangGraph Promotion to pp~~ ❌ KILLED 2026-05-30
 
-**Goal**: Validate langgraph quality in a pre-production environment before touching prod.
+> pp namespace permanently off-limits. Cutover is dev-only.
 
-1. Identify the Git SHA to promote (the current `main` HEAD).
-2. In `k8s-workbench` (or `homelab-gitops` values), update `pp.yaml` for the langgraph application:
+### ~~Stage 9.3 — LangGraph Promotion to prod~~ ❌ KILLED 2026-05-30
 
-   ```yaml
-   # pp/values.yaml or pp/values-langgraph.yaml
-   commonEnv:
-     ORCHESTRATOR_ENGINE: "langgraph"
-     ORCHESTRATOR_LANGGRAPH_MODES: "single,fusion,council"
-     LANGGRAPH_CHECKPOINT_ENABLED: "true"
-     LANGGRAPH_THREAD_NAMESPACE: "fusion-council"
-     LANGGRAPH_ENGINE_VERSION: "v1"
-   ```
+> prod namespace permanently off-limits. Cutover is dev-only.
 
-3. Commit and push. ArgoCD will sync within 3 minutes.
-4. Monitor the pp langgraph deployment:
+### Stage 9.2 (replacement) — Dev LangGraph Promotion
 
-   ```bash
-   kubectl get pods -n pp -l app=fusion-council-api-langgraph
-   kubectl logs -n pp deployment/fusion-council-api-langgraph-api --tail=20
-   kubectl logs -n pp deployment/fusion-council-api-langgraph-worker --tail=20
-   ```
+**Goal**: Cut over the dev-langgraph deployment from shadow to production langgraph engine.
 
-5. Run smoke test against pp:
-
-   ```bash
-   curl -X POST https://fusion-council-pp.local/v1/runs \
-     -H "Authorization: Bearer <pp-api-key>" \
-     -H "Content-Type: application/json" \
-     -d '{"mode":"single","prompt":"Hello, world?"}'
-   ```
-
-6. Verify candidate answers are returned correctly and `/v1/runs/{run_id}/answers` shows correct stage structure.
-7. Check `run_orchestration_state` to confirm langgraph engine is being used:
-
-   ```bash
-   kubectl exec -n pp deploy/postgres-pp-postgresql-0 -- psql -U app -d appdb -c \
-     "SELECT run_id, orchestrator_engine, orchestration_status FROM run_orchestration_state ORDER BY created_at DESC LIMIT 5;"
-   ```
-
-**Exit criterion**: pp smoke test passes; langgraph engine confirmed in `run_orchestration_state`.
-
----
-
-### Stage 9.3 — LangGraph Promotion to prod
-
-**Goal**: Replace legacy as the live-traffic production engine.
-
-> **WARNING**: This step affects live user traffic. Ensure rollback plan is ready before proceeding.
-
-1. Confirm the shadow parity gate has passed on `dev` (Stage 9.1).
-2. Confirm pp validation passed (Stage 9.2).
-3. Verify the `decision_log` and `reflection` system is working — this is the Phase 10 feedback loop that begins now.
-4. In `k8s-workbench`, update `prod.yaml` for the langgraph application:
-
+1. Confirm shadow parity gate has passed on `dev` (Stage 9.1).
+2. In `homelab-gitops`, update `dev/values-langgraph.yaml`:
    ```yaml
    commonEnv:
-     ORCHESTRATOR_ENGINE: "langgraph"
+     ORCHESTRATOR_ENGINE: "langgraph"    # was "shadow"
      ORCHESTRATOR_LANGGRAPH_MODES: "single,fusion,council"
-     LANGGRAPH_CHECKPOINT_ENABLED: "true"
-     LANGGRAPH_THREAD_NAMESPACE: "fusion-council"
-     LANGGRAPH_ENGINE_VERSION: "v1"
    ```
+3. Commit and push. ArgoCD syncs automatically.
+4. Verify the langgraph worker logs show `orchestrator_engine=langgraph`.
+5. Verify `run_orchestration_state` shows `orchestrator_engine='langgraph'` for new runs.
+6. Monitor for 30 minutes — verify smoke CronJob healthy.
 
-5. Commit and push. ArgoCD syncs automatically.
-6. Monitor the prod deployment closely for the first 30 minutes:
+**Exit criterion**: Smoke test passes with langgraph engine confirmed.
 
-   ```bash
-   kubectl get pods -n prod -l app=fusion-council-api-langgraph
-   kubectl logs -n prod deployment/fusion-council-api-langgraph-worker --tail=50
-
-   # Watch for errors
-   kubectl logs -n prod deployment/fusion-council-api-langgraph-worker --follow --tail=100
-   ```
-
-7. Verify the smoke test CronJob is healthy on prod:
-
-   ```bash
-   kubectl get cronjob -n prod fusion-council-api-langgraph-smoke -o-wide
-   kubectl get jobs -n prod | grep smoke
-   ```
-
-8. Check Prometheus for elevated error rates:
-
-   ```bash
-   # Error rate spike check (Prometheus query)
-   rate(fusion_council_run_errors_total{engine="langgraph"}[5m]) > 0.01
-   ```
-
-**Exit criterion**: Prod smoke test CronJob completes successfully; error rate nominal.
-
----
-
-### Stage 9.4 — Legacy Decommission
+### Stage 9.3 — Legacy Decommission
 
 **Goal**: Remove the legacy engine after confirmed langgraph stability.
 
