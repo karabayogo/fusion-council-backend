@@ -74,15 +74,19 @@ A passing report looks like:
 
 1. Deploy the current `main` SHA to all three dev deployments.
 2. Verify `run_shadow_diff` rows are being written (check for recent `logged_at` values):
+
    ```bash
    kubectl exec -n dev deploy/postgres-dev-postgresql-0 -- psql -U app -d appdb -c \
      "SELECT COUNT(*) FROM run_shadow_diff WHERE logged_at > NOW() - INTERVAL '1 hour';"
    ```
+
 3. Wait at least 7 days of shadow traffic before considering gate evaluation.
 4. Run the shadow-validate cronjob manually to check current status:
+
    ```bash
    kubectl create job --from=cronjob/fusion-council-api-shadow-shadow-validate shadow-validate-manual -n dev
    ```
+
 5. Review the gate report. If any failure, diagnose before proceeding.
 
 **Exit criterion**: Shadow CronJob completes with `overall=PASS`.
@@ -95,6 +99,7 @@ A passing report looks like:
 
 1. Identify the Git SHA to promote (the current `main` HEAD).
 2. In `k8s-workbench` (or `homelab-gitops` values), update `pp.yaml` for the langgraph application:
+
    ```yaml
    # pp/values.yaml or pp/values-langgraph.yaml
    commonEnv:
@@ -104,22 +109,28 @@ A passing report looks like:
      LANGGRAPH_THREAD_NAMESPACE: "fusion-council"
      LANGGRAPH_ENGINE_VERSION: "v1"
    ```
+
 3. Commit and push. ArgoCD will sync within 3 minutes.
 4. Monitor the pp langgraph deployment:
+
    ```bash
    kubectl get pods -n pp -l app=fusion-council-api-langgraph
    kubectl logs -n pp deployment/fusion-council-api-langgraph-api --tail=20
    kubectl logs -n pp deployment/fusion-council-api-langgraph-worker --tail=20
    ```
+
 5. Run smoke test against pp:
+
    ```bash
    curl -X POST https://fusion-council-pp.local/v1/runs \
      -H "Authorization: Bearer <pp-api-key>" \
      -H "Content-Type: application/json" \
      -d '{"mode":"single","prompt":"Hello, world?"}'
    ```
+
 6. Verify candidate answers are returned correctly and `/v1/runs/{run_id}/answers` shows correct stage structure.
 7. Check `run_orchestration_state` to confirm langgraph engine is being used:
+
    ```bash
    kubectl exec -n pp deploy/postgres-pp-postgresql-0 -- psql -U app -d appdb -c \
      "SELECT run_id, orchestrator_engine, orchestration_status FROM run_orchestration_state ORDER BY created_at DESC LIMIT 5;"
@@ -139,6 +150,7 @@ A passing report looks like:
 2. Confirm pp validation passed (Stage 9.2).
 3. Verify the `decision_log` and `reflection` system is working — this is the Phase 10 feedback loop that begins now.
 4. In `k8s-workbench`, update `prod.yaml` for the langgraph application:
+
    ```yaml
    commonEnv:
      ORCHESTRATOR_ENGINE: "langgraph"
@@ -147,8 +159,10 @@ A passing report looks like:
      LANGGRAPH_THREAD_NAMESPACE: "fusion-council"
      LANGGRAPH_ENGINE_VERSION: "v1"
    ```
+
 5. Commit and push. ArgoCD syncs automatically.
 6. Monitor the prod deployment closely for the first 30 minutes:
+
    ```bash
    kubectl get pods -n prod -l app=fusion-council-api-langgraph
    kubectl logs -n prod deployment/fusion-council-api-langgraph-worker --tail=50
@@ -156,12 +170,16 @@ A passing report looks like:
    # Watch for errors
    kubectl logs -n prod deployment/fusion-council-api-langgraph-worker --follow --tail=100
    ```
+
 7. Verify the smoke test CronJob is healthy on prod:
+
    ```bash
    kubectl get cronjob -n prod fusion-council-api-langgraph-smoke -o-wide
    kubectl get jobs -n prod | grep smoke
    ```
+
 8. Check Prometheus for elevated error rates:
+
    ```bash
    # Error rate spike check (Prometheus query)
    rate(fusion_council_run_errors_total{engine="langgraph"}[5m]) > 0.01
@@ -176,6 +194,7 @@ A passing report looks like:
 **Goal**: Remove the legacy engine after confirmed langgraph stability.
 
 **Do not proceed until**:
+
 - LangGraph has been in production for at least 7 days
 - Shadow parity gate has been passing for that period
 - Zero `terminal_corruption_count` incidents
@@ -184,6 +203,7 @@ A passing report looks like:
 **Actions**:
 
 1. Update ArgoCD applications to disable legacy:
+
    ```bash
    # Disable legacy deployments (remove or set replicaCount=0)
    kubectl scale deployment fusion-council-api-legacy -n dev --replicas=0
@@ -197,6 +217,7 @@ A passing report looks like:
    - `prod/values-legacy.yaml` → same
 
 3. Remove legacy ArgoCD Applications:
+
    ```bash
    kubectl delete -f k8s-workbench/argocd/apps/fusion-council-api-dev-legacy.yaml
    kubectl delete -f k8s-workbench/argocd/apps/fusion-council-api-pp-legacy.yaml  # if exists
@@ -204,6 +225,7 @@ A passing report looks like:
    ```
 
 4. Verify zero legacy pods:
+
    ```bash
    kubectl get pods -A | grep fusion-council-api | grep legacy
    # should return nothing
@@ -276,9 +298,11 @@ After cutover, run through this checklist:
 **Symptom**: `kubectl get pods -n prod | grep langgraph` shows crashloop.
 
 **Check**:
+
 1. `kubectl logs <pod> -n prod` — look for `AsyncPostgresSaver` setup errors
 2. `LANGGRAPH_CHECKPOINT_DB_URL` env var is correctly set
 3. PostgreSQL is reachable from the pod:
+
    ```bash
    kubectl exec -it <pod> -n prod -- python3 -c \
      "import asyncpg; import asyncio; asyncio.run(asyncpg.connect('<DB_URL>'))"
@@ -289,6 +313,7 @@ After cutover, run through this checklist:
 **Root cause**: LangGraph is generating a different stage ordering than legacy for the same prompt pattern.
 
 **Diagnosis**:
+
 ```bash
 # Check which runs are failing parity
 kubectl exec -n dev deploy/postgres-dev-postgresql-0 -- psql -U app -d appdb -c "
