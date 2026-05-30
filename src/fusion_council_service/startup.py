@@ -125,7 +125,7 @@ async def _recover_stale_runs(settings: Settings) -> int:
             # Fetch all stale resumed runs in one query
             stale_runs = await conn.fetch(
                 """
-                SELECT run_id, thread_id, checkpoint_ns, resume_count, updated_at
+                SELECT run_id, thread_id, orchestrator_mode, resume_count, updated_at
                 FROM run_orchestration_state
                 WHERE orchestration_status = 'resumed'
                   AND updated_at < (NOW() - INTERVAL '1 second' * $1)
@@ -139,7 +139,7 @@ async def _recover_stale_runs(settings: Settings) -> int:
             for row in stale_runs:
                 run_id = row["run_id"]
                 thread_id = row["thread_id"]
-                checkpoint_ns = row["checkpoint_ns"]
+                orchestrator_mode = row["orchestrator_mode"]
 
                 saver = get_checkpoint_saver()
                 if saver is None:
@@ -156,7 +156,7 @@ async def _recover_stale_runs(settings: Settings) -> int:
                     continue
 
                 try:
-                    config = {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}
+                    config = {"thread_id": thread_id, "checkpoint_namespace": orchestrator_mode}
                     checkpoint = await saver.get(config)
                     if checkpoint is None:
                         # No checkpoint found — cannot resume. Mark abandoned.

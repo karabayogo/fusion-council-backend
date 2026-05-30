@@ -47,7 +47,7 @@ async def get_or_create_thread_id(
     """
     rows = await conn.fetch(
         """
-        SELECT run_id, thread_id, checkpoint_ns, orchestration_status
+        SELECT run_id, thread_id, orchestrator_mode, orchestration_status
         FROM run_orchestration_state
         WHERE run_id = $1
         """,
@@ -59,7 +59,7 @@ async def get_or_create_thread_id(
         row = rows[0]
         langgraph_config = {
             "thread_id": row["thread_id"],
-            "checkpoint_namespace": row["checkpoint_namespace"],
+            "checkpoint_namespace": row["orchestrator_mode"],
         }
         logger.info(
             f"get_or_create_thread_id: resume run_id={run_id} "
@@ -74,13 +74,15 @@ async def get_or_create_thread_id(
     await conn.execute(
         """
         INSERT INTO run_orchestration_state
-            (run_id, thread_id, checkpoint_ns, orchestration_status, resume_count, updated_at)
-        VALUES ($1, $2, $3, 'started', 0, NOW())
+            (run_id, thread_id, orchestrator_mode, orchestrator_engine, engine_version,
+             orchestration_status, resume_count, updated_at, created_at)
+        VALUES ($1, $2, $3, 'langgraph', $4, 'started', 0, NOW(), NOW())
         ON CONFLICT (run_id) DO NOTHING
         """,
         run_id,
         thread_id,
         checkpoint_ns,
+        LANGGRAPH_ENGINE_VERSION,
     )
 
     logger.info(

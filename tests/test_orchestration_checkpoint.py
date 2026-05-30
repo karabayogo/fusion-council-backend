@@ -90,7 +90,7 @@ class TestGetOrCreateThreadId:
         existing_row.__getitem__ = lambda self, k: {
             "run_id": "run-789",
             "thread_id": "thread-existing-abc",
-            "checkpoint_namespace": "mode=single",
+            "orchestrator_mode": "mode=single",
             "orchestration_status": "started",
         }[k]
 
@@ -118,7 +118,7 @@ class TestGetOrCreateThreadId:
         existing_row.__getitem__ = lambda self, k: {
             "run_id": "run-orphaned",
             "thread_id": "thread-orphaned-xyz",
-            "checkpoint_namespace": "mode=single",
+            "orchestrator_mode": "mode=single",
             "orchestration_status": "resumed",
         }[k]
 
