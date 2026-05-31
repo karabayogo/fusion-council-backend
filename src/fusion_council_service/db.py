@@ -125,7 +125,7 @@ def new_session() -> Union[Session, sqlite3.Connection]:
 
 
 def initialize_schema(db=None) -> None:
-    """Read schema.sql, create tables, and apply versioned migrations."""
+    """Read schema.sql, create tables, and apply Alembic migrations."""
     if db is None:
         db = new_session()
         _own_session = True
@@ -136,7 +136,6 @@ def initialize_schema(db=None) -> None:
     sql = _render_schema_sql_for_active_dialect(schema_path.read_text())
 
     if _is_postgresql:
-        # Execute each statement separately for PostgreSQL
         from sqlalchemy.exc import ProgrammingError
         statements = [s.strip() for s in sql.split(";") if s.strip()]
         for stmt in statements:
@@ -149,10 +148,47 @@ def initialize_schema(db=None) -> None:
     else:
         db.executescript(sql)
 
-    apply_schema_migrations(db)
+    # Run Alembic migrations (replaces the old apply_schema_migrations)
+    _run_alembic_migrations()
 
     if _own_session and _is_postgresql:
         db.close()
+
+
+def _run_alembic_migrations() -> None:
+    """Apply pending Alembic migrations on top of schema.sql base.
+
+    Alembic's own alembic_version table tracks which revisions have been
+    applied. On existing databases without alembic_version (pre-Alembic),
+    the initial stamp (001) is applied and subsequent migrations (002+)
+    are idempotent — they check for column existence before ALTER.
+
+    SKIPPED for SQLite :memory: databases — each SQLAlchemy engine gets
+    its own in-memory instance, so Alembic's engine can't see tables
+    created by the app's engine. Use schema.sql directly for tests.
+    """
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    # Skip for in-memory SQLite (tests) — each engine gets its own DB
+    db_path = os.environ.get("DATABASE_PATH", "")
+    if db_path == ":memory:":
+        return
+
+    alembic_cfg_path = Path(__file__).parents[2] / "alembic.ini"
+    if not alembic_cfg_path.exists():
+        logger.warning("alembic.ini not found — skipping Alembic migrations")
+        return
+
+    alembic_cfg = AlembicConfig(str(alembic_cfg_path))
+    alembic_cfg.set_main_option("script_location", str(alembic_cfg_path.parent / "migrations"))
+
+    try:
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations applied successfully")
+    except Exception as exc:
+        logger.error("Alembic migrations failed: %s", exc, exc_info=True)
+        raise
 
 
 def _table_columns(db, table_name: str) -> set[str]:

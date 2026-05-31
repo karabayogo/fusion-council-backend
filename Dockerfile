@@ -24,6 +24,8 @@ COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 # Copy application source
 COPY src/ ./src/
 COPY config/ ./config/
+COPY alembic.ini ./alembic.ini
+COPY migrations/ ./migrations/
 
 # Create data directory with correct ownership
 RUN mkdir -p /app/data \
