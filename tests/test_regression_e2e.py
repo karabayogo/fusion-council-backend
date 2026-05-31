@@ -36,7 +36,7 @@ import pytest
 API_BASE = os.environ.get("FUSION_COUNCIL_E2E_API_BASE", "http://localhost:8081")
 API_TOKEN = os.environ.get("FUSION_COUNCIL_E2E_API_TOKEN", "dev-key-1")
 PORT_FORWARD_PORT = 8081
-PORT_FORWARD_TARGET = "svc/fusion-council-api"
+PORT_FORWARD_TARGET = "svc/fusion-council-api-langgraph"
 PORT_FORWARD_NAMESPACE = os.environ.get("FUSION_COUNCIL_E2E_NAMESPACE", "dev")
 
 # Timeouts for different modes (seconds)
@@ -49,11 +49,109 @@ MODE_TIMEOUTS = {
 # Polling interval
 POLL_INTERVAL = 5
 
+# Provider env var names that must stay in sync with ~/.hermes/.env
+_PROVIDER_KEYS = ("OPENCODE_GO_API_KEY", "MINIMAX_API_KEY")
+
+
+# ── Provider-key sync — reads active keys from ~/.hermes/.env ───────────────
+
+def _parse_active_provider_keys() -> dict[str, str]:
+    """Parse ~/.hermes/.env for active (uncommented) provider API keys.
+
+    Only the LAST uncommented occurrence of each key is returned,
+    matching standard dotenv override semantics.
+    """
+    env_path = os.path.expanduser("~/.hermes/.env")
+    keys: dict[str, str] = {}
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("["):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key in _PROVIDER_KEYS and value:
+                    keys[key] = value  # last-wins (dotenv semantics)
+    except FileNotFoundError:
+        pass
+    return keys
+
+
+def _fusion_deployments(namespace: str) -> list[str]:
+    """Return names of all fusion-council-api deployments in *namespace*."""
+    result = subprocess.run(
+        ["kubectl", "get", "deploy", "-n", namespace,
+         "-o", "jsonpath={.items[*].metadata.name}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        name for name in result.stdout.strip().split()
+        if "fusion-council-api" in name
+    ]
+
+
+@pytest.fixture(scope="session")
+def sync_provider_keys():
+    """Sync active provider keys from ~/.hermes/.env into cluster deployments.
+
+    Runs exactly once per test session — *before* any API calls.
+    Compares each provider key from ``.env`` against what is currently set
+    on the deployments.  Only touches deployments whose keys are stale.
+    """
+    env_keys = _parse_active_provider_keys()
+    if not env_keys:
+        pytest.skip("No active provider keys found in ~/.hermes/.env")
+
+    namespace = PORT_FORWARD_NAMESPACE
+    deployments = _fusion_deployments(namespace)
+    if not deployments:
+        pytest.skip(f"No fusion-council-api deployments found in {namespace}")
+
+    changed = False
+    for key_name in _PROVIDER_KEYS:
+        new_value = env_keys.get(key_name)
+        if not new_value:
+            continue
+
+        # Read current value from the first deployment
+        check = subprocess.run(
+            ["kubectl", "get", "deploy", "-n", namespace, deployments[0],
+             "-o", f"jsonpath={{.spec.template.spec.containers[0].env[?(@.name=='{key_name}')].value}}"],
+            capture_output=True, text=True,
+        )
+        current = check.stdout.strip()
+        if current == new_value:
+            continue
+
+        changed = True
+        for dep in deployments:
+            subprocess.run(
+                ["kubectl", "set", "env", "deployment", dep,
+                 "-n", namespace, "--overwrite",
+                 f"{key_name}={new_value}"],
+                capture_output=True,
+            )
+
+    if changed:
+        for dep in deployments:
+            subprocess.run(
+                ["kubectl", "rollout", "status", "deployment", dep,
+                 "-n", namespace, "--timeout=120s"],
+                capture_output=True,
+            )
+        time.sleep(3)  # let readiness gates settle
+
 
 # ── Port-forward fixture (session-scoped) ──────────────────────────────────
 
 @pytest.fixture(scope="session")
-def api_base():
+def api_base(sync_provider_keys):
     """Ensure port-forward is running and return the base URL."""
     # Check health
     try:
