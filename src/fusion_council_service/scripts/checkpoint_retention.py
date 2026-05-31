@@ -44,16 +44,22 @@ async def purge_old_checkpoints(conn: asyncpg.pool.PoolConnectionProxy, retentio
     cutoff_str = cutoff.isoformat().replace("+00:00", "Z")
 
     # Count before delete for logging
+    # LangGraph's actual table names (as created by AsyncPostgresSaver):
+    #   checkpoints, checkpoint_writes, checkpoint_blobs
     count_checkpoints = await conn.fetchval(
-        "SELECT COUNT(*) FROM checkpoint WHERE created_at < $1",
+        "SELECT COUNT(*) FROM checkpoints WHERE checkpoint ->> 'created_at' < $1",
         cutoff_str,
     )
-    count_meta = await conn.fetchval(
-        "SELECT COUNT(*) FROM checkpoint_metadata WHERE created_at < $1",
+    count_writes = await conn.fetchval(
+        "SELECT COUNT(*) FROM checkpoint_writes WHERE created_at < $1",
+        cutoff_str,
+    )
+    count_blobs = await conn.fetchval(
+        "SELECT COUNT(*) FROM checkpoint_blobs WHERE created_at < $1",
         cutoff_str,
     )
 
-    total_before = (count_checkpoints or 0) + (count_meta or 0)
+    total_before = (count_checkpoints or 0) + (count_writes or 0) + (count_blobs or 0)
     if total_before == 0:
         logger.info(
             "checkpoint_retention: no rows older than %d days (cutoff %s)",
@@ -62,20 +68,24 @@ async def purge_old_checkpoints(conn: asyncpg.pool.PoolConnectionProxy, retentio
         )
         return 0
 
-    # Delete checkpoint rows (child first — checkpoint has more rows typically).
-    await conn.execute("DELETE FROM checkpoint WHERE created_at < $1", cutoff_str)
+    # Delete in dependency order: writes first (FK to checkpoints), then blobs, then checkpoints
+    await conn.execute("DELETE FROM checkpoint_writes WHERE created_at < $1", cutoff_str)
+    deleted_writes = count_writes or 0
+
+    await conn.execute("DELETE FROM checkpoint_blobs WHERE created_at < $1", cutoff_str)
+    deleted_blobs = count_blobs or 0
+
+    await conn.execute("DELETE FROM checkpoints WHERE checkpoint_id IN (SELECT checkpoint_id FROM checkpoints WHERE checkpoint ->> 'created_at' < $1)", cutoff_str)
     deleted_checkpoints = count_checkpoints or 0
 
-    await conn.execute("DELETE FROM checkpoint_metadata WHERE created_at < $1", cutoff_str)
-    deleted_meta = count_meta or 0
-
-    deleted_total = deleted_checkpoints + deleted_meta
+    deleted_total = deleted_checkpoints + deleted_writes + deleted_blobs
 
     logger.info(
-        "checkpoint_retention: deleted %d checkpoint rows + %d metadata rows "
+        "checkpoint_retention: deleted %d checkpoints + %d writes + %d blobs "
         "(retention_days=%d, cutoff=%s)",
         deleted_checkpoints,
-        deleted_meta,
+        deleted_writes,
+        deleted_blobs,
         retention_days,
         cutoff_str,
     )
