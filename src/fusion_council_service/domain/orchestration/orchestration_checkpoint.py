@@ -13,7 +13,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-LANGGRAPH_ENGINE_VERSION = getattr(Settings(), "LANGGRAPH_ENGINE_VERSION", "v1")
+_settings_cache: "Settings | None" = None
+
+
+def _get_settings() -> Settings:
+    """Lazy Settings singleton — avoids import-time crash in CronJob contexts."""
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = Settings()
+    return _settings_cache
+
+
+def get_engine_version() -> str:
+    """Return LANGGRAPH_ENGINE_VERSION from settings (lazy-init safe)."""
+    return getattr(_get_settings(), "LANGGRAPH_ENGINE_VERSION", "v1")
 
 
 class OrchestrationEngineVersionMismatch(Exception):
@@ -93,7 +106,7 @@ def get_or_create_thread_id(
             "run_id": run_id,
             "thread_id": thread_id,
             "checkpoint_ns": checkpoint_ns,
-            "engine_version": LANGGRAPH_ENGINE_VERSION,
+            "engine_version": get_engine_version(),
             "now": now,
             "now2": now,
         },
