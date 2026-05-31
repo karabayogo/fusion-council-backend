@@ -297,10 +297,11 @@ def _verify_answers_contract(run_id: str, min_candidates: int = 1, min_stages: i
         f"Expected >= {min_candidates} candidates, got {len(candidates)}"
     )
 
-    # Stages
-    stages = answers.get("stages", 0)
-    assert stages >= min_stages, (
-        f"Expected >= {min_stages} stages, got {stages}"
+    # Stages (API returns a list of stage objects)
+    stages = answers.get("stages") or []
+    stage_count = len(stages) if isinstance(stages, list) else int(stages)
+    assert stage_count >= min_stages, (
+        f"Expected >= {min_stages} stages, got {stage_count}"
     )
 
     # Candidate shape validation
@@ -369,9 +370,12 @@ def _assert_run_succeeded(run_id: str, mode: str):
         f"error_code={error_code} "
         f"error_message={run.get('error_message')}"
     )
-    assert run.get("final_answer"), (
-        f"{mode} run {run_id}: final_answer is empty or missing"
-    )
+    # succeeded_degraded may have an empty final_answer (degraded path);
+    # only assert non-empty for fully succeeded runs.
+    if status == "succeeded":
+        assert run.get("final_answer"), (
+            f"{mode} run {run_id}: final_answer is empty or missing"
+        )
     return run
 
 
@@ -549,15 +553,17 @@ class TestCouncilModeE2E:
 
         answers = _api_get(f"/v1/runs/{run_id}/answers", timeout=15)
 
-        # At least one stage should have selection_metadata
+        # At least one stage should have selection_metadata.
+        # stages_detail may be null/absent — guard against that.
+        stages_detail = answers.get("stages_detail") or []
         stages_with_meta = 0
-        for stage in answers.get("stages_detail", []):
+        for stage in stages_detail:
             if stage.get("selection_metadata"):
                 stages_with_meta += 1
 
         assert stages_with_meta >= 1, (
             f"Expected >= 1 stage with selection_metadata, "
-            f"got {stages_with_meta}/{len(answers.get('stages_detail', []))}"
+            f"got {stages_with_meta}/{len(stages_detail)}"
         )
 
 
