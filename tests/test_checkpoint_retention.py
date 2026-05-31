@@ -25,36 +25,36 @@ class TestPurgeOldCheckpoints:
 
         deleted = await purge_old_checkpoints(conn, retention_days=7)
         assert deleted == 0
-        # Should count but not execute DELETE
-        assert conn.fetchval.call_count == 2  # checkpoint + metadata counts
+        # Should count checkpoints + writes + blobs (3 fetchval calls)
+        assert conn.fetchval.call_count == 3
         conn.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_deletes_old_rows_and_returns_count(self):
         """When old rows exist, delete them and return total deleted count."""
         conn = AsyncMock()
-        # Simulate 10 checkpoint rows and 5 metadata rows older than cutoff
-        conn.fetchval = AsyncMock(side_effect=[10, 5])
+        # Simulate 10 checkpoints, 5 writes, 3 blobs older than cutoff
+        conn.fetchval = AsyncMock(side_effect=[10, 5, 3])
         conn.execute = AsyncMock()
 
         deleted = await purge_old_checkpoints(conn, retention_days=7)
 
-        assert deleted == 15  # 10 + 5
-        # Should have issued two DELETE statements
-        assert conn.execute.call_count == 2
+        assert deleted == 18  # 10 + 5 + 3
+        # Should have issued three DELETE statements (writes, blobs, checkpoints)
+        assert conn.execute.call_count == 3
 
     @pytest.mark.asyncio
     async def test_handles_none_count_gracefully(self):
         """fetchval may return None if COUNT returns no rows — treat as 0."""
         conn = AsyncMock()
-        # One table has no old rows, the other has some
-        conn.fetchval = AsyncMock(side_effect=[None, 3])
+        # Two tables have no old rows, one has some
+        conn.fetchval = AsyncMock(side_effect=[None, None, 3])
         conn.execute = AsyncMock()
 
         deleted = await purge_old_checkpoints(conn, retention_days=7)
 
         assert deleted == 3
-        assert conn.execute.call_count == 2
+        assert conn.execute.call_count == 3
 
 
 class TestRetentionDaysValidation:
@@ -67,7 +67,7 @@ class TestRetentionDaysValidation:
 
         with patch.dict(
             "os.environ",
-            {"DATABASE_URL": "postgresql://u:p@h:5432/d", "CHECKPOINT_RETENTION_DAYS": "0"},
+            {"DATABASE_URL": "postgresql://u:***@h:5432/d", "CHECKPOINT_RETENTION_DAYS": "0"},
             clear=False,
         ):
             pool_mock = AsyncMock()
@@ -89,7 +89,7 @@ class TestRetentionDaysValidation:
 
         with patch.dict(
             "os.environ",
-            {"DATABASE_URL": "postgresql://u:p@h:5432/d", "CHECKPOINT_RETENTION_DAYS": "-1"},
+            {"DATABASE_URL": "postgresql://u:***@h:5432/d", "CHECKPOINT_RETENTION_DAYS": "-1"},
             clear=False,
         ):
             pool_mock = AsyncMock()
