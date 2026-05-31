@@ -330,8 +330,28 @@ def _assert_run_succeeded(run_id: str, mode: str):
         "HTTP_429", "RATE_LIMITED", "PROVIDER_TIMEOUT",
         "AUTH_FAILED", "HTTP_500", "HTTP_502", "HTTP_503",
         "PROVIDER_ERROR", "NO_MODELS",
+        "FUSION_QUORUM_NOT_MET", "COUNCIL_QUORUM_NOT_MET",
     }
     if status == "failed" and error_code in TRANSIENT_ERRORS:
+        # For quorum-not-met, double-check that every failed candidate
+        # also had a transient error — a non-transient candidate failure
+        # (e.g. a code bug) should still fail the test.
+        if error_code in ("FUSION_QUORUM_NOT_MET", "COUNCIL_QUORUM_NOT_MET"):
+            try:
+                answers = _api_get(f"/v1/runs/{run_id}/answers", timeout=10)
+                for cand in answers.get("candidates", []):
+                    if cand.get("status") == "failed":
+                        cand_err = cand.get("error_code", "")
+                        if cand_err and cand_err not in TRANSIENT_ERRORS:
+                            pytest.fail(
+                                f"{mode} run {run_id}: {error_code} but "
+                                f"candidate '{cand.get('alias')}' failed with "
+                                f"non-transient error '{cand_err}' — "
+                                f"this may be a real regression"
+                            )
+            except Exception:
+                pass  # if we can't inspect candidates, trust the run-level code
+
         pytest.skip(
             f"{mode} run {run_id}: transient provider error "
             f"({error_code}) — cluster healthy, providers unavailable"
