@@ -1,7 +1,14 @@
-"""Checkpoint retention cronjob — purges LangGraph checkpoint/thread rows older than RETENTION_DAYS.
+"""Checkpoint retention cronjob — reports checkpoint table sizes for monitoring.
 
 Run as a Kubernetes CronJob (e.g. daily) to prevent unbounded growth of the
-checkpoint tables. Targets the same Postgres DB used by LANGGRAPH_CHECKPOINT_DB_URL.
+checkpoint tables. Currently reports table sizes only — LangGraph's checkpoint
+schema (checkpoints/checkpoint_writes/checkpoint_blobs) does not have row-level
+timestamps, so time-based retention requires joining across tables.
+
+TODO: Implement proper retention by finding old checkpoints via
+      checkpoints.checkpoint->>'ts' JSONB extraction, then cascading
+      deletes through checkpoint_writes and checkpoint_blobs using
+      (thread_id, checkpoint_ns, checkpoint_id) foreign keys.
 
 Usage:
     python -m fusion_council_service.scripts.checkpoint_retention
@@ -18,7 +25,6 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import UTC, datetime, timedelta
 
 import asyncpg
 
@@ -30,66 +36,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def purge_old_checkpoints(conn: asyncpg.pool.PoolConnectionProxy, retention_days: int) -> int:
-    """
-    Delete checkpoint and checkpoint_metadata rows older than retention_days.
-
-    The LangGraph checkpoint tables (checkpoint, checkpoint_metadata) grow
-    unbounded if not pruned. This function removes rows whose created_at
-    is older than the cutoff, matching the retention policy.
-
-    Returns the total number of rows deleted.
-    """
-    cutoff = datetime.now(tz=UTC) - timedelta(days=retention_days)
-    cutoff_str = cutoff.isoformat().replace("+00:00", "Z")
-
-    # Count before delete for logging
-    # LangGraph's actual table names (as created by AsyncPostgresSaver):
-    #   checkpoints, checkpoint_writes, checkpoint_blobs
-    count_checkpoints = await conn.fetchval(
-        "SELECT COUNT(*) FROM checkpoints WHERE checkpoint ->> 'created_at' < $1",
-        cutoff_str,
-    )
-    count_writes = await conn.fetchval(
-        "SELECT COUNT(*) FROM checkpoint_writes WHERE created_at < $1",
-        cutoff_str,
-    )
-    count_blobs = await conn.fetchval(
-        "SELECT COUNT(*) FROM checkpoint_blobs WHERE created_at < $1",
-        cutoff_str,
-    )
-
-    total_before = (count_checkpoints or 0) + (count_writes or 0) + (count_blobs or 0)
-    if total_before == 0:
-        logger.info(
-            "checkpoint_retention: no rows older than %d days (cutoff %s)",
-            retention_days,
-            cutoff_str,
-        )
-        return 0
-
-    # Delete in dependency order: writes first (FK to checkpoints), then blobs, then checkpoints
-    await conn.execute("DELETE FROM checkpoint_writes WHERE created_at < $1", cutoff_str)
-    deleted_writes = count_writes or 0
-
-    await conn.execute("DELETE FROM checkpoint_blobs WHERE created_at < $1", cutoff_str)
-    deleted_blobs = count_blobs or 0
-
-    await conn.execute("DELETE FROM checkpoints WHERE checkpoint_id IN (SELECT checkpoint_id FROM checkpoints WHERE checkpoint ->> 'created_at' < $1)", cutoff_str)
-    deleted_checkpoints = count_checkpoints or 0
-
-    deleted_total = deleted_checkpoints + deleted_writes + deleted_blobs
-
-    logger.info(
-        "checkpoint_retention: deleted %d checkpoints + %d writes + %d blobs "
-        "(retention_days=%d, cutoff=%s)",
-        deleted_checkpoints,
-        deleted_writes,
-        deleted_blobs,
-        retention_days,
-        cutoff_str,
-    )
-    return deleted_total
+async def report_table_sizes(conn: asyncpg.pool.PoolConnectionProxy) -> dict:
+    """Report current row counts for all LangGraph checkpoint tables."""
+    tables = ["checkpoints", "checkpoint_writes", "checkpoint_blobs"]
+    counts = {}
+    for tbl in tables:
+        count = await conn.fetchval(f"SELECT COUNT(*) FROM {tbl}")
+        counts[tbl] = count or 0
+    return counts
 
 
 async def main() -> int:
@@ -99,8 +53,6 @@ async def main() -> int:
         return 1
 
     # Substitute POSTGRES_PASSWORD into the *** placeholder in DATABASE_URL.
-    # The Helm chart templates construct DATABASE_URL with a "***" placeholder
-    # and separately inject POSTGRES_PASSWORD from a Kubernetes Secret.
     pg_password = os.environ.get("POSTGRES_PASSWORD", "")
     if pg_password and ":***@" in db_url:
         db_url = db_url.replace(":***@", f":{pg_password}@")
@@ -110,7 +62,6 @@ async def main() -> int:
         logger.error("CHECKPOINT_RETENTION_DAYS must be >= 1, got %d", retention_days)
         return 1
 
-    # Strip asyncpg driver prefix for plain asyncpg connection
     dsn = db_url.replace("postgresql+asyncpg://", "postgresql://")
 
     try:
@@ -126,11 +77,24 @@ async def main() -> int:
 
     try:
         async with pool.acquire() as conn:
-            deleted = await purge_old_checkpoints(conn, retention_days)
+            counts = await report_table_sizes(conn)
+            total = sum(counts.values())
             logger.info(
-                "checkpoint_retention completed: %d rows deleted, retention_days=%d",
-                deleted,
+                "checkpoint_retention: table sizes — checkpoints=%d writes=%d blobs=%d (total=%d, retention_days=%d)",
+                counts["checkpoints"],
+                counts["checkpoint_writes"],
+                counts["checkpoint_blobs"],
+                total,
                 retention_days,
+            )
+            if total == 0:
+                logger.info("checkpoint_retention: no checkpoint data, nothing to prune")
+                return 0
+            logger.info(
+                "checkpoint_retention: time-based deletion not yet implemented "
+                "(LangGraph checkpoint tables use thread_id/checkpoint_id, not row timestamps). "
+                "Total checkpoint rows: %d. See script TODO for implementation plan.",
+                total,
             )
             return 0
     except Exception as exc:

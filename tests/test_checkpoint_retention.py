@@ -4,57 +4,44 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fusion_council_service.scripts.checkpoint_retention import purge_old_checkpoints
+from fusion_council_service.scripts.checkpoint_retention import report_table_sizes
 
 
-class TestPurgeOldCheckpoints:
-    """Tests for purge_old_checkpoints()."""
+class TestReportTableSizes:
+    """Tests for report_table_sizes()."""
 
     def test_module_importable(self):
         """checkpoint_retention module must be importable."""
         from fusion_council_service.scripts import checkpoint_retention
-        assert callable(checkpoint_retention.purge_old_checkpoints)
+        assert callable(checkpoint_retention.report_table_sizes)
         assert callable(checkpoint_retention.main)
 
     @pytest.mark.asyncio
-    async def test_returns_zero_when_no_old_rows(self):
-        """When no rows exceed the cutoff, return 0 and do not delete."""
+    async def test_reports_all_three_tables(self):
+        """Should query all three checkpoint tables and return dict."""
         conn = AsyncMock()
-        conn.fetchval = AsyncMock(return_value=0)
-        conn.execute = AsyncMock()
-
-        deleted = await purge_old_checkpoints(conn, retention_days=7)
-        assert deleted == 0
-        # Should count checkpoints + writes + blobs (3 fetchval calls)
-        assert conn.fetchval.call_count == 3
-        conn.execute.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_deletes_old_rows_and_returns_count(self):
-        """When old rows exist, delete them and return total deleted count."""
-        conn = AsyncMock()
-        # Simulate 10 checkpoints, 5 writes, 3 blobs older than cutoff
         conn.fetchval = AsyncMock(side_effect=[10, 5, 3])
-        conn.execute = AsyncMock()
 
-        deleted = await purge_old_checkpoints(conn, retention_days=7)
-
-        assert deleted == 18  # 10 + 5 + 3
-        # Should have issued three DELETE statements (writes, blobs, checkpoints)
-        assert conn.execute.call_count == 3
+        counts = await report_table_sizes(conn)
+        assert counts == {
+            "checkpoints": 10,
+            "checkpoint_writes": 5,
+            "checkpoint_blobs": 3,
+        }
+        assert conn.fetchval.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_handles_none_count_gracefully(self):
-        """fetchval may return None if COUNT returns no rows — treat as 0."""
+    async def test_handles_none_counts(self):
+        """fetchval may return None for empty tables — treat as 0."""
         conn = AsyncMock()
-        # Two tables have no old rows, one has some
-        conn.fetchval = AsyncMock(side_effect=[None, None, 3])
-        conn.execute = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=[None, 0, None])
 
-        deleted = await purge_old_checkpoints(conn, retention_days=7)
-
-        assert deleted == 3
-        assert conn.execute.call_count == 3
+        counts = await report_table_sizes(conn)
+        assert counts == {
+            "checkpoints": 0,
+            "checkpoint_writes": 0,
+            "checkpoint_blobs": 0,
+        }
 
 
 class TestRetentionDaysValidation:
