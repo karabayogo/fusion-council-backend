@@ -152,8 +152,13 @@ def sync_provider_keys():
 
 @pytest.fixture(scope="session")
 def api_base(sync_provider_keys):
-    """Ensure port-forward is running and return the base URL."""
-    # Check health
+    """Ensure a live port-forward tunnel to the API service.
+
+    Reuses an existing healthy tunnel.  Only tears down and restarts when
+    the existing tunnel is dead.  Uses ``start_new_session=True`` to keep
+    the tunnel alive even when the test process itself is interrupted.
+    """
+    # Reuse existing healthy tunnel
     try:
         _api_get("/healthz", timeout=5)
         return API_BASE
@@ -167,7 +172,7 @@ def api_base(sync_provider_keys):
     )
     time.sleep(1)
 
-    # Start fresh port-forward
+    # Start fresh port-forward in its own session so it outlives the test runner
     subprocess.Popen(
         [
             "kubectl", "port-forward",
@@ -177,6 +182,7 @@ def api_base(sync_provider_keys):
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
 
     # Wait for it to become ready
