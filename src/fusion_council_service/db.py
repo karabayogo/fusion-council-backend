@@ -77,6 +77,14 @@ def get_engine():
 
     if _is_postgresql:
         db_url = os.environ["DATABASE_URL"]
+        # Handle *** placeholder — substitute POSTGRES_PASSWORD from env
+        # (same pattern as checkpoint-retention CronJob; needed because
+        # psycopg2/libpq does NOT auto-substitute PGPASSWORD when password
+        # is explicitly set in the connection URL)
+        if ":***@" in db_url:
+            pg_password = os.environ.get("POSTGRES_PASSWORD", "")
+            if pg_password:
+                db_url = db_url.replace(":***@", f":{pg_password}@")
         _engine = create_engine(
             db_url,
             poolclass=QueuePool,
