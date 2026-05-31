@@ -21,7 +21,6 @@ import sys
 
 from fusion_council_service.db import initialize_schema, new_session, close_db
 from fusion_council_service.domain.decision_log import rotate_decision_log
-from fusion_council_service.config import Settings
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO")),
