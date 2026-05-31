@@ -88,6 +88,13 @@ async def main() -> int:
         logger.error("DATABASE_URL not set — cannot connect to checkpoint DB")
         return 1
 
+    # Substitute POSTGRES_PASSWORD into the *** placeholder in DATABASE_URL.
+    # The Helm chart templates construct DATABASE_URL with a "***" placeholder
+    # and separately inject POSTGRES_PASSWORD from a Kubernetes Secret.
+    pg_password = os.environ.get("POSTGRES_PASSWORD", "")
+    if pg_password and ":***@" in db_url:
+        db_url = db_url.replace(":***@", f":{pg_password}@")
+
     retention_days = int(os.environ.get("CHECKPOINT_RETENTION_DAYS", "7"))
     if retention_days < 1:
         logger.error("CHECKPOINT_RETENTION_DAYS must be >= 1, got %d", retention_days)
