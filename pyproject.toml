@@ -52,3 +52,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 fusion_council_service = ["schema.sql"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end regression tests that hit the live deployed API (requires cluster + port-forward)",
+]
+addopts = "-m \"not e2e\""
