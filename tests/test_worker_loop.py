@@ -223,3 +223,89 @@ async def test_run_active_sentinel_created_and_removed(mock_worker, tmp_db):
     # We also verify the run completed successfully
     cursor = tmp_db.execute("SELECT status FROM runs WHERE run_id = ?", ("run_active_test",))
     assert cursor.fetchone()["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (E2 fix) — verification too-short guard
+# ---------------------------------------------------------------------------
+
+def test_min_verification_tokens_constant_exists():
+    """E2 fix: MIN_VERIFICATION_TOKENS must be defined and > 0."""
+    from fusion_council_service.domain.worker_loop import MIN_VERIFICATION_TOKENS
+    assert isinstance(MIN_VERIFICATION_TOKENS, int)
+    assert MIN_VERIFICATION_TOKENS > 0
+    # 50 is the documented floor — well below any legit verdict, well above a stub.
+    assert MIN_VERIFICATION_TOKENS >= 50
+
+
+@pytest.mark.asyncio
+async def test_verification_short_output_rejected_with_insufficient_evidence(mock_worker, tmp_db):
+    """E2 fix: when verification stage returns <MIN_VERIFICATION_TOKENS tokens,
+    the verdict is REJECTED, final_confidence=0.5, and final_answer gets the
+    [INSUFFICIENT EVIDENCE] prefix. Run c908a00b1c834b8eb9ebe2b4 (2026-06-01)
+    had kimi-k2.6 return 19 tokens as a 'verification' — that low-confidence
+    answer was accepted, polluting the synthesis. This test locks the guard.
+
+    Strategy: insert a council-mode run, then patch _call_structured_provider_async
+    to return a (success=True, output_tokens=19) result. The verification stage
+    must (a) NOT use that verdict's confidence, (b) record
+    error_code=VERIFICATION_TOO_SHORT on the run_candidates row, and
+    (c) prefix the synthesis with [INSUFFICIENT EVIDENCE].
+    """
+    from fusion_council_service.domain import worker_loop as wl
+
+    worker = mock_worker
+    run_id = "run_e2_verif_short"
+    insert_run(
+        db=tmp_db, run_id=run_id, mode="council", prompt="p",
+        system_prompt=None, temperature=0.2, max_output_tokens=1000,
+        deadline_seconds=120, deadline_at=utc_now_plus_seconds(120),
+        owner_token_hash="h", metadata_json="{}", requested_models_json=None,
+        created_at=utc_now_iso(),
+    )
+    run = dict(tmp_db.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+
+    # Stage 1: first_opinion returns 1 candidate with 100 tokens (synthetic answer).
+    # Stages 2-4 (debate, refinement, synthesis): each returns 1 candidate with 100 tokens.
+    # Stage 5 (verification): returns SUCCESS but with output_tokens=5 (< 50 floor).
+    short_verif_result = (True, '{"verdict":"approve","confidence":0.1}', None, None, 2000, 50, 5)
+    fake_opinion_result = (True, "fake opinion text that is at least one hundred tokens " * 10,
+                           None, None, 500, 10, 100)
+
+    call_count = {"n": 0}
+
+    async def fake_call_provider_async(request, db, rid):
+        return fake_opinion_result
+
+    async def fake_call_structured_provider_async(request, schema, db, rid):
+        # Always return the SHORT verification result — the bug repro.
+        return short_verif_result
+
+    with patch.object(worker, "_call_provider_async", side_effect=fake_call_provider_async), \
+         patch.object(worker, "_call_structured_provider_async", side_effect=fake_call_structured_provider_async):
+        await worker._execute_run(run)
+
+    # After execution: final_confidence MUST be 0.5 (guard overrode the 0.1 verdict).
+    final_row = tmp_db.execute(
+        "SELECT status, final_confidence, final_answer FROM runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    assert final_row["status"] == "succeeded"
+    assert final_row["final_confidence"] == 0.5, (
+        f"E2 bug: short verification verdict's confidence was accepted "
+        f"(got {final_row['final_confidence']}, expected 0.5)"
+    )
+    assert "[INSUFFICIENT EVIDENCE" in final_row["final_answer"], (
+        f"E2 bug: synthesis missing INSUFFICIENT EVIDENCE prefix. Got: {final_row['final_answer'][:200]}"
+    )
+
+    # The verification candidate MUST be marked with error_code=VERIFICATION_TOO_SHORT.
+    verif_cand = tmp_db.execute(
+        "SELECT error_code, error_message FROM run_candidates "
+        "WHERE run_id = ? AND stage = 'verification'",
+        (run_id,),
+    ).fetchone()
+    assert verif_cand is not None, "no verification candidate row recorded"
+    assert verif_cand["error_code"] == "VERIFICATION_TOO_SHORT", (
+        f"E2 fix missing: verification candidate error_code={verif_cand['error_code']!r}, "
+        f"expected 'VERIFICATION_TOO_SHORT'"
+    )

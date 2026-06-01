@@ -57,6 +57,20 @@ _executor = ThreadPoolExecutor(max_workers=10)
 # 600s. Never lower this without auditing every call site.
 DEFAULT_PROVIDER_TIMEOUT_SECONDS = 600
 
+# Minimum acceptable verification output (in tokens). Below this we treat
+# the verification as a non-answer (model returned empty/garbage/structured-
+# output failure) and fall back to confidence=0.5 + INSUFFICIENT_EVIDENCE
+# prefix instead of accepting a low-confidence verdict. Root cause: run
+# c908a00b1c834b8eb9ebe2b4 (2026-06-01) — kimi-k2.6 returned 19 tokens in
+# 2s as "verification" candidate, model_validate_json succeeded with a
+# 0.45 confidence verdict, and the run was marked succeeded with that
+# low-confidence synthesis. We must catch empty/short structured outputs
+# at the verification stage and never let a non-answer depress confidence
+# silently. The 50-token floor is well below any legitimate verification
+# verdict (which is always 200+ tokens of justification) but well above
+# a structured-output-failure stub.
+MIN_VERIFICATION_TOKENS = 50
+
 
 def _resolve_effective_timeout(
     request: ProviderGenerateRequest,
@@ -1091,13 +1105,41 @@ class Worker:
             candidate = self._record_stage_candidate_result(db, run_id, cand_id, verif_model, "verification", provider_result)
             if candidate:
                 raw_text = candidate.get("normalized_answer", "")
-                try:
-                    parsed = _VerificationPayload.model_validate_json(raw_text)
-                    confidence = float(parsed.confidence)
-                    if parsed.verdict.strip().lower() == "abstain":
-                        synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
-                except Exception:
-                    pass
+                # E2 guard: reject verification outputs that are too short to
+                # be a real verdict. Structured-output failures routinely return
+                # 10-30 tokens of empty/garbage JSON that model_validate_json
+                # happens to accept. We must catch that here and refuse to
+                # accept the verdict — fall back to neutral 0.5 confidence
+                # rather than letting a non-answer depress the synthesis.
+                verif_out_tokens = int(candidate.get("output_tokens") or 0)
+                if verif_out_tokens < MIN_VERIFICATION_TOKENS:
+                    logger.warning(
+                        f"verification output too short ({verif_out_tokens} tokens < {MIN_VERIFICATION_TOKENS}); "
+                        f"rejecting verdict from {verif_model['alias']}, keeping confidence=0.5",
+                        run_id=run_id,
+                    )
+                    # Mark this candidate as failed with a clear error_code so
+                    # run_orchestration_state carries the signal for telemetry.
+                    execute_sql(
+                        db,
+                        "UPDATE run_candidates SET error_code=:ec, error_message=:em WHERE candidate_id=:cid",
+                        {
+                            "ec": "VERIFICATION_TOO_SHORT",
+                            "em": f"output_tokens={verif_out_tokens} < MIN_VERIFICATION_TOKENS={MIN_VERIFICATION_TOKENS}",
+                            "cid": cand_id,
+                        },
+                    )
+                    commit_tx(db)
+                    synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: 0.5] (verification rejected: {verif_out_tokens} tokens)\n{synthesis_text}"
+                    confidence = 0.5
+                else:
+                    try:
+                        parsed = _VerificationPayload.model_validate_json(raw_text)
+                        confidence = float(parsed.confidence)
+                        if parsed.verdict.strip().lower() == "abstain":
+                            synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
+                    except Exception:
+                        pass
 
         execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
                     {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})
