@@ -1,16 +1,14 @@
 """Tests for model catalog."""
 
-import os
-
 from fusion_council_service.domain.budget import select_models_for_mode
 from fusion_council_service.model_catalog import (
     ModelCatalog,
-    load_yaml_catalog,
 )
 
 
 def test_duplicate_alias_raises():
     from fusion_council_service.model_catalog import load_yaml_catalog
+    import os
     import tempfile
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
