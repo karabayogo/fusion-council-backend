@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fusion_council_service.domain.candidate_repository import insert_candidate
 from fusion_council_service.domain.orchestration.orchestration_state import OrchestrationState
+from fusion_council_service.domain.worker_loop import build_provider_request
 from fusion_council_service.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -142,12 +143,19 @@ async def node_first_opinion_parallel(
     async def call_peer(peer: dict) -> dict:
         async with semaphore:
             try:
-                request = {
-                    "provider": peer.get("provider"),
-                    "model": peer.get("model"),
-                    "prompt": state.get("prompt", ""),
-                    "max_tokens": state.get("max_tokens", 4096),
-                }
+                # E1 fix: build a real ProviderGenerateRequest via the canonical
+                # helper so timeout_seconds is propagated from the catalog entry.
+                # Previously this passed a plain dict with wrong field names
+                # (e.g. "model" instead of "provider_model"), which would
+                # AttributeError on real provider call — masked by tests because
+                # Worker is mocked.
+                request = build_provider_request(
+                    peer,
+                    system_prompt=state.get("system_prompt"),
+                    user_prompt=state.get("prompt", ""),
+                    max_output_tokens=state.get("max_tokens", 4096),
+                    temperature=state.get("temperature", 0.2),
+                )
                 # Use worker's async provider method
                 success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
                     request, worker.db, run_id
@@ -297,12 +305,14 @@ async def node_peer_review_call(
         review_peer = models[-1]  # Last peer is typically different
         first_opinions = [r.get("raw_text", "") for r in candidate_results if r.get("success")]
 
-        request = {
-            "provider": review_peer.get("provider"),
-            "model": review_peer.get("model"),
-            "prompt": "Review these first opinions:\n\n" + "\n\n".join(first_opinions),
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            review_peer,
+            system_prompt=None,
+            user_prompt="Review these first opinions:\n\n" + "\n\n".join(first_opinions),
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.1),
+        )
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
         )
@@ -374,12 +384,14 @@ async def node_debate_call(
         peer1, peer2 = models[0], models[1]
         first_opinions = [r.get("raw_text", "") for r in candidate_results[:2]]
 
-        request = {
-            "provider": peer1.get("provider"),
-            "model": peer1.get("model"),
-            "prompt": f"Debate this topic with another perspective:\n\nQuestion: {state.get('prompt', '')}\n\nFirst Opinion A: {first_opinions[0] if len(first_opinions) > 0 else 'N/A'}\n\nFirst Opinion B: {first_opinions[1] if len(first_opinions) > 1 else 'N/A'}",
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            peer1,
+            system_prompt=None,
+            user_prompt=f"Debate this topic with another perspective:\n\nQuestion: {state.get('prompt', '')}\n\nFirst Opinion A: {first_opinions[0] if len(first_opinions) > 0 else 'N/A'}\n\nFirst Opinion B: {first_opinions[1] if len(first_opinions) > 1 else 'N/A'}",
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.2),
+        )
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
         )
@@ -472,12 +484,14 @@ async def node_synthesis_call(
             raise ValueError("No models available for synthesis")
 
         synthesis_model = models[0]
-        request = {
-            "provider": synthesis_model.get("provider"),
-            "model": synthesis_model.get("model"),
-            "prompt": synthesis_prompt,
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            synthesis_model,
+            system_prompt=None,
+            user_prompt=synthesis_prompt,
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.2),
+        )
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
         )
@@ -577,16 +591,17 @@ async def node_verification_call(
         models = worker.catalog.get_peers_for_mode("council")
         if not models:
             raise ValueError("No models available for verification")
-
-        verification_model = models[0]
+        verif_peer = models[0]
         computed_answer = state.get("computed_final_answer", "")
 
-        request = {
-            "provider": verification_model.get("provider"),
-            "model": verification_model.get("model"),
-            "prompt": f"Verify this council answer: {computed_answer}",
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            verif_peer,
+            system_prompt=None,
+            user_prompt=f"Verify this answer:\n\n{computed_answer}",
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.1),
+        )
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
         )

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fusion_council_service.domain.candidate_repository import insert_candidate
 from fusion_council_service.domain.orchestration.orchestration_state import OrchestrationState
 from fusion_council_service.domain.scoring import build_fusion_prompt
+from fusion_council_service.domain.worker_loop import build_provider_request
 from fusion_council_service.logging_utils import get_logger
 
 if TYPE_CHECKING:
@@ -118,12 +119,14 @@ async def node_generation_parallel(
     async def call_model(model: dict) -> dict:
         async with semaphore:
             try:
-                request = {
-                    "provider": model.get("provider"),
-                    "model": model.get("model"),
-                    "prompt": state.get("prompt", ""),
-                    "max_tokens": state.get("max_tokens", 4096),
-                }
+                # E1 fix: real ProviderGenerateRequest via canonical helper
+                request = build_provider_request(
+                    model,
+                    system_prompt=state.get("system_prompt"),
+                    user_prompt=state.get("prompt", ""),
+                    max_output_tokens=state.get("max_tokens", 4096),
+                    temperature=state.get("temperature", 0.2),
+                )
                 # Use worker's async provider method
                 success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
                     request, worker.db, run_id
@@ -300,12 +303,14 @@ async def node_synthesis_call(
             raise ValueError("No models available for synthesis")
 
         synthesis_model = models[0]
-        request = {
-            "provider": synthesis_model.get("provider"),
-            "model": synthesis_model.get("model"),
-            "prompt": synthesis_prompt,
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            synthesis_model,
+            system_prompt=None,
+            user_prompt=synthesis_prompt,
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.2),
+        )
         # Use worker's async provider method
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
@@ -417,12 +422,14 @@ async def node_verification_call(
         verification_model = models[0]
         computed_answer = state.get("computed_final_answer", "")
 
-        request = {
-            "provider": verification_model.get("provider"),
-            "model": verification_model.get("model"),
-            "prompt": f"Verify this answer: {computed_answer}",
-            "max_tokens": state.get("max_tokens", 4096),
-        }
+        # E1 fix: real ProviderGenerateRequest via canonical helper
+        request = build_provider_request(
+            verification_model,
+            system_prompt=None,
+            user_prompt=f"Verify this answer: {computed_answer}",
+            max_output_tokens=state.get("max_tokens", 4096),
+            temperature=state.get("temperature", 0.1),
+        )
         # Use worker's async provider method
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await worker._call_provider_async(
             request, worker.db, run_id
