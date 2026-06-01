@@ -36,7 +36,15 @@ def _compute_metrics_from_rows(rows: list[dict[str, Any]], lookback_hours: int) 
             "terminal_corruption_count": 0,
             "runs_by_engine": {},
             "lookback_hours": lookback_hours,
-            "error": "No runs in lookback window",
+            # E3 fix: was previously None/"no data" which let the gate silently
+            # PASS when zero rows were written. Run c908a00b1c834b8eb9ebe2b4
+            # (2026-06-01) had langgraph engine running without a shadow_diff
+            # row for the entire run — the gate read 0 rows in 7d and called
+            # it PASS, masking the fact that parity hadn't been observed at
+            # all. The gate must explicitly distinguish "no data" from
+            # "parity verified". We return error="NO_DATA" so evaluate_gate()
+            # can add a hard failure rather than letting 0 rows mean 0 risk.
+            "error": "NO_DATA",
         }
 
     total = len(rows)
@@ -67,6 +75,20 @@ def _compute_metrics_from_rows(rows: list[dict[str, Any]], lookback_hours: int) 
 
 def evaluate_gate(metrics: dict[str, Any]) -> GateDecision:
     failures: list[str] = []
+
+    # E3 fix: explicitly fail on NO_DATA. The previous code had no such check
+    # — when 0 rows were written (e.g. shadow engine not running, or
+    # langgraph mode not enabled for any runs), the gate silently PASSed,
+    # which is the E3 bug. NO_DATA is now a hard failure.
+    if metrics.get("error") == "NO_DATA":
+        failures.append(
+            f"NO_DATA: 0 shadow_diff rows in lookback window "
+            f"({metrics.get('lookback_hours', 168)}h). The parity gate has no "
+            f"signal — either shadow engine is not routing runs, or the "
+            f"langgraph engine is not writing run_shadow_diff rows. "
+            f"Investigate before claiming parity."
+        )
+        return GateDecision(failures=failures, overall="FAIL")
 
     if metrics.get("total_runs", 0) < MIN_CONSECUTIVE_RUNS:
         failures.append(
