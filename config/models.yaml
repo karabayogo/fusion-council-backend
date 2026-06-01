@@ -15,56 +15,56 @@ models:
   #   tier: frontier
   #   role_bias: reviewer
 
-  - alias: opencode-go/deepseek-v4-pro
+  - alias: primary-researcher
     provider: opencode_go
-    provider_model: deepseek-v4-pro
-    enabled: true
-    family: deepseek
-    tier: frontier
-    role_bias: primary
-    timeout_seconds: 600  # thinking model — 300s was too short, times out on long chains
-
-  - alias: opencode-go/qwen3.6-plus
-    provider: opencode_go
-    provider_model: qwen3.6-plus
+    provider_model: qwen3.7-max
     enabled: true
     family: qwen
     tier: frontier
-    role_bias: reviewer
-    timeout_seconds: 600  # thinking model — 300s was too short for long reasoning chains
+    role_bias: primary
+    timeout_seconds: 600
 
-  - alias: minimax/MiniMax-M2.7
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
-    enabled: true
-    family: minimax
-    tier: frontier
-    role_bias: backup
-    timeout_seconds: 600  # thinking model needs more time than the 300s default
-
-  - alias: minimax/MiniMax-M2.7-synthesis
-    provider: minimax_token_plan
-    provider_model: MiniMax-M2.7
-    enabled: true
-    family: minimax
-    tier: frontier
-    role_bias: synthesis
-    timeout_seconds: 600  # thinking model needs more time than the 300s default
-
-  - alias: opencode-go/deepseek-v4-pro-creative
-    provider: opencode_go
-    provider_model: deepseek-v4-pro
-    enabled: true
-    family: deepseek
-    tier: frontier
-    role_bias: creative
-    timeout_seconds: 600  # thinking model — 300s was too short, times out on long chains
-
-  - alias: opencode-go/kimi-k2.6
+  - alias: reviewer
     provider: opencode_go
     provider_model: kimi-k2.6
     enabled: true
     family: kimi
     tier: frontier
+    role_bias: reviewer
+    timeout_seconds: 600 
+
+  - alias: backup
+    provider: opencode_go
+    provider_model: qwen3.6-plus
+    enabled: true
+    family: qwen
+    tier: frontier
+    role_bias: backup
+    timeout_seconds: 600
+
+  - alias: synthesizer
+    provider: opencode_go
+    provider_model: deepseek-v4-pro
+    enabled: true
+    family: deepseek
+    tier: frontier
+    role_bias: synthesis
+    timeout_seconds: 600
+
+  - alias: creative
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: creative
+    timeout_seconds: 600
+
+  - alias: verifier
+    provider: opencode_go
+    provider_model: glm-5.1
+    enabled: true
+    family: glm
+    tier: frontier
     role_bias: verification
-    timeout_seconds: 600  # fallback model — 300s was too short when promoted mid-chain
+    timeout_seconds: 600
