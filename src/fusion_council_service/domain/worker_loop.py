@@ -45,6 +45,83 @@ logger = get_logger("fusion_council_service.worker_loop")
 _executor = ThreadPoolExecutor(max_workers=10)
 
 
+# Last-resort floor for the provider-call wall-clock timeout. Per the
+# systematic-debugging skill "MiniMax Thinking Model" entry, thinking
+# models on long chains can legitimately take 5-10 minutes. The 600s
+# default matches the per-model `timeout_seconds: 600` we set for every
+# frontier thinking model in config/models.yaml. A hardcoded 300 here
+# was the root cause of run_c908a00b1c834b8eb9ebe2b4 M2.7 debate
+# `PROVIDER_TIMEOUT` (2026-06-01) — many call sites in this file
+# constructed ProviderGenerateRequest without timeout_seconds, and the
+# 300s default in _call_provider_async silently overrode the catalog
+# 600s. Never lower this without auditing every call site.
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 600
+
+
+def _resolve_effective_timeout(
+    request: ProviderGenerateRequest,
+    caller_timeout: Optional[int] = None,
+) -> int:
+    """Resolve the effective wall-clock timeout for a provider call.
+
+    Precedence (highest first):
+      1. caller_timeout (explicit override from call site)
+      2. request.timeout_seconds (per-model catalog value)
+      3. DEFAULT_PROVIDER_TIMEOUT_SECONDS (last-resort floor)
+
+    The previous code used `request.timeout_seconds if request.timeout_seconds else 300`
+    which silently fell back to 300s when the request didn't carry the field
+    — exactly the E1 bug. Use this helper from all call sites so the
+    floor is consistent and visible.
+    """
+    if caller_timeout is not None and caller_timeout > 0:
+        return caller_timeout
+    if request.timeout_seconds is not None and request.timeout_seconds > 0:
+        return request.timeout_seconds
+    return DEFAULT_PROVIDER_TIMEOUT_SECONDS
+
+
+def build_provider_request(
+    model_entry: dict,
+    *,
+    user_prompt: str,
+    system_prompt: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    extra_overrides: Optional[dict] = None,
+) -> ProviderGenerateRequest:
+    """Build a ProviderGenerateRequest from a catalog entry with timeout_seconds populated.
+
+    This is the ONLY canonical way to construct a request in the worker.
+    Using it from every call site makes the E1 bug impossible to reintroduce:
+    every request automatically carries `timeout_seconds` from the catalog.
+
+    Args:
+        model_entry: Catalog row (must have alias, provider, provider_model,
+            and optionally timeout_seconds).
+        user_prompt: The user-facing prompt.
+        system_prompt: Optional system prompt.
+        max_output_tokens: Caller's desired max tokens (defaults to 4096
+            if None — matches the historical inline default).
+        temperature: Defaults to 0.2 (run default).
+        extra_overrides: For callers that need to override individual fields
+            beyond timeout_seconds (rare — prefer extending the signature).
+    """
+    fields = {
+        "alias": model_entry["alias"],
+        "provider": model_entry["provider"],
+        "provider_model": model_entry["provider_model"],
+        "user_prompt": user_prompt,
+        "system_prompt": system_prompt,
+        "max_output_tokens": max_output_tokens if max_output_tokens is not None else 4096,
+        "temperature": temperature if temperature is not None else 0.2,
+        "timeout_seconds": model_entry.get("timeout_seconds"),
+    }
+    if extra_overrides:
+        fields.update(extra_overrides)
+    return ProviderGenerateRequest(**fields)
+
+
 class _VerificationPayload(BaseModel):
     verdict: str
     confidence: float
@@ -341,11 +418,11 @@ class Worker:
         return None
 
     async def _call_provider_async(self, request, db: object, run_id: str,
-                                    timeout_seconds: int = 300):
+                                    timeout_seconds: Optional[int] = None):
         """Call provider in thread pool and return result.
 
         Wraps the blocking call with a timeout. If the provider call exceeds
-        timeout_seconds, returns a failed ProviderGenerateResult with
+        the effective timeout, returns a failed ProviderGenerateResult with
         error_code='PROVIDER_TIMEOUT'.
 
         Non-timeout failures (HTTP 4xx/5xx, auth errors, network errors) are
@@ -353,15 +430,22 @@ class Worker:
         (e.g. HTTP_500, AUTH_FAILED). The "Provider call timed out" log message
         only appears for actual asyncio.TimeoutError — not for HTTP errors.
 
-        The request.timeout_seconds field, when set, overrides timeout_seconds
-        for this specific model call (allows thinking models to get more time).
+        Timeout precedence (see _resolve_effective_timeout):
+          1. explicit timeout_seconds kwarg (caller override)
+          2. request.timeout_seconds (per-model catalog value)
+          3. DEFAULT_PROVIDER_TIMEOUT_SECONDS (last-resort floor, 600s)
+
+        The previous hardcoded `timeout_seconds: int = 300` default silently
+        overrode the catalog's 600s for any call site that constructed a
+        ProviderGenerateRequest without `timeout_seconds` set — the E1 root
+        cause for run_c908a00b1c834b8eb9ebe2b4. All call sites now go through
+        build_provider_request() which always populates the field.
         """
         loop = asyncio.get_event_loop()
         coro = loop.run_in_executor(
             _executor, _run_provider_sync, self._registry, request,
         )
-        # Allow per-request timeout override (e.g. for thinking models)
-        effective_timeout = request.timeout_seconds if request.timeout_seconds else timeout_seconds
+        effective_timeout = _resolve_effective_timeout(request, timeout_seconds)
         try:
             return await asyncio.wait_for(coro, timeout=effective_timeout)
         except asyncio.TimeoutError:
@@ -385,11 +469,12 @@ class Worker:
         response_model: type[BaseModel],
         db: object,
         run_id: str,
-        timeout_seconds: int = 300,
+        timeout_seconds: Optional[int] = None,
         max_retries: int = 2,
     ) -> ProviderGenerateResult:
         """Call provider with structured-output fallback utility in thread pool."""
         loop = asyncio.get_event_loop()
+        effective_timeout = _resolve_effective_timeout(request, timeout_seconds)
 
         def _invoke() -> ProviderGenerateResult:
             return invoke_structured_or_freetext(
@@ -400,7 +485,7 @@ class Worker:
             )
 
         try:
-            result = await asyncio.wait_for(loop.run_in_executor(_executor, _invoke), timeout=timeout_seconds)
+            result = await asyncio.wait_for(loop.run_in_executor(_executor, _invoke), timeout=effective_timeout)
             if isinstance(result, ProviderGenerateResult):
                 return result
             if isinstance(result, (tuple, list)) and len(result) == 7:
@@ -451,8 +536,8 @@ class Worker:
                 success=False,
                 raw_text=None,
                 error_code="PROVIDER_TIMEOUT",
-                error_message=f"Provider call timed out after {timeout_seconds}s",
-                latency_ms=timeout_seconds * 1000,
+                error_message=f"Provider call timed out after {effective_timeout}s",
+                latency_ms=effective_timeout * 1000,
                 input_tokens=None,
                 output_tokens=None,
             )
@@ -471,15 +556,12 @@ class Worker:
         model = models[0]
         emit_stage_started(db, run_id, "generation", [model["alias"]])
 
-        request = ProviderGenerateRequest(
-            alias=model["alias"],
-            provider=model["provider"],
-            provider_model=model["provider_model"],
+        request = build_provider_request(
+            model,
             system_prompt=run.get("system_prompt"),
             user_prompt=run["prompt"],
             max_output_tokens=run["max_output_tokens"],
             temperature=run["temperature"],
-            timeout_seconds=model.get("timeout_seconds"),
         )
 
         success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = await self._call_provider_async(request, db, run_id)
@@ -510,14 +592,12 @@ class Worker:
             # Try fallback for single mode
             fallback = self._try_fallback(db, run, model["alias"])
             if fallback:
-                fallback_req = ProviderGenerateRequest(
-                    alias=fallback["alias"], provider=fallback["provider"],
-                    provider_model=fallback["provider_model"],
+                fallback_req = build_provider_request(
+                    fallback,
                     system_prompt=run.get("system_prompt"),
                     user_prompt=run["prompt"],
                     max_output_tokens=run["max_output_tokens"],
                     temperature=run["temperature"],
-                    timeout_seconds=fallback.get("timeout_seconds"),
                 )
                 fb_candidate_id = new_candidate_id()
                 fb_ok, fb_txt, fb_ec, fb_em, fb_lat, fb_in, fb_out = await self._call_provider_async(fallback_req, db, run_id)
@@ -560,14 +640,12 @@ class Worker:
         gen_candidates = []
         pending_calls = []
         for model in models:
-            request = ProviderGenerateRequest(
-                alias=model["alias"], provider=model["provider"],
-                provider_model=model["provider_model"],
+            request = build_provider_request(
+                model,
                 system_prompt=run.get("system_prompt"),
                 user_prompt=run["prompt"],
                 max_output_tokens=run["max_output_tokens"],
                 temperature=run["temperature"],
-                timeout_seconds=model.get("timeout_seconds"),
             )
             pending_calls.append((model, request))
 
@@ -618,9 +696,8 @@ class Worker:
             for failed_alias in failed_aliases:
                 fallback = self._try_fallback(db, run, failed_alias)
                 if fallback:
-                    fallback_req = ProviderGenerateRequest(
-                        alias=fallback["alias"], provider=fallback["provider"],
-                        provider_model=fallback["provider_model"],
+                    fallback_req = build_provider_request(
+                        fallback,
                         system_prompt=run.get("system_prompt"),
                         user_prompt=run["prompt"],
                         max_output_tokens=run["max_output_tokens"],
@@ -664,9 +741,8 @@ class Worker:
         synth_model = synth_models[0] if synth_models else models[0]
         memory_context = get_memory_context(db, run["prompt"], "fusion", n_same=3, n_cross=2)
         synthesis_prompt = build_fusion_prompt(run["prompt"], succeeded, memory_context=memory_context)
-        request = ProviderGenerateRequest(
-            alias=synth_model["alias"], provider=synth_model["provider"],
-            provider_model=synth_model["provider_model"],
+        request = build_provider_request(
+            synth_model,
             system_prompt=run.get("system_prompt"),
             user_prompt=synthesis_prompt,
             max_output_tokens=run["max_output_tokens"],
@@ -705,11 +781,12 @@ class Worker:
         verification_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         verif_models = select_models_for_mode("fusion", self._catalog)
         verif_model = verif_models[1] if len(verif_models) > 1 else models[0]
-        request = ProviderGenerateRequest(
-            alias=verif_model["alias"], provider=verif_model["provider"],
-            provider_model=verif_model["provider_model"],
-            system_prompt=None, user_prompt=verification_prompt,
-            max_output_tokens=500, temperature=0.1,
+        request = build_provider_request(
+            verif_model,
+            system_prompt=None,
+            user_prompt=verification_prompt,
+            max_output_tokens=500,
+            temperature=0.1,
         )
         cand_id = new_candidate_id()
         confidence = 0.5
@@ -759,14 +836,12 @@ class Worker:
         sem = asyncio.Semaphore(3)
         async def call_model(model):
             async with sem:
-                request = ProviderGenerateRequest(
-                    alias=model["alias"], provider=model["provider"],
-                    provider_model=model["provider_model"],
+                request = build_provider_request(
+                    model,
                     system_prompt=run.get("system_prompt"),
                     user_prompt=run["prompt"],
                     max_output_tokens=run["max_output_tokens"],
                     temperature=run["temperature"],
-                    timeout_seconds=model.get("timeout_seconds"),
                 )
                 return model, await self._call_provider_async(request, db, run_id)
 
@@ -859,11 +934,12 @@ class Worker:
                 best = select_best_candidate(succeeded_opinions)
                 synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
             else:
-                request = ProviderGenerateRequest(
-                    alias=synth_model["alias"], provider=synth_model["provider"],
-                    provider_model=synth_model["provider_model"],
-                    system_prompt=None, user_prompt=synth_prompt,
-                    max_output_tokens=run["max_output_tokens"], temperature=0.2,
+                request = build_provider_request(
+                    synth_model,
+                    system_prompt=None,
+                    user_prompt=synth_prompt,
+                    max_output_tokens=run["max_output_tokens"],
+                    temperature=0.2,
                 )
                 cand_id = new_candidate_id()
                 provider_result = await self._call_provider_async(request, db, run_id)
@@ -891,11 +967,12 @@ class Worker:
                 logger.warning("No healthy peer-review model available; skipping review", run_id=run_id)
                 continue
             review_prompt = build_peer_review_prompt(run["prompt"], opinion_cand.get("normalized_answer", ""), reviewer["alias"])
-            request = ProviderGenerateRequest(
-                alias=reviewer["alias"], provider=reviewer["provider"],
-                provider_model=reviewer["provider_model"],
-                system_prompt=None, user_prompt=review_prompt,
-                max_output_tokens=run["max_output_tokens"], temperature=0.1,
+            request = build_provider_request(
+                reviewer,
+                system_prompt=None,
+                user_prompt=review_prompt,
+                max_output_tokens=run["max_output_tokens"],
+                temperature=0.1,
             )
             review_tasks.append((reviewer, request))
 
@@ -936,11 +1013,12 @@ class Worker:
             if debate_model is None:
                 logger.warning("No healthy debate model available; skipping debate", run_id=run_id)
             else:
-                request = ProviderGenerateRequest(
-                    alias=debate_model["alias"], provider=debate_model["provider"],
-                    provider_model=debate_model["provider_model"],
-                    system_prompt=None, user_prompt=debate_prompt,
-                    max_output_tokens=run["max_output_tokens"], temperature=0.2,
+                request = build_provider_request(
+                    debate_model,
+                    system_prompt=None,
+                    user_prompt=debate_prompt,
+                    max_output_tokens=run["max_output_tokens"],
+                    temperature=0.2,
                 )
                 cand_id = new_candidate_id()
                 provider_result = await self._call_provider_async(request, db, run_id)
@@ -964,11 +1042,12 @@ class Worker:
             best = select_best_candidate(succeeded_opinions)
             synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
         else:
-            request = ProviderGenerateRequest(
-                alias=synth_model["alias"], provider=synth_model["provider"],
-                provider_model=synth_model["provider_model"],
-                system_prompt=None, user_prompt=synth_prompt,
-                max_output_tokens=run["max_output_tokens"], temperature=0.2,
+            request = build_provider_request(
+                synth_model,
+                system_prompt=None,
+                user_prompt=synth_prompt,
+                max_output_tokens=run["max_output_tokens"],
+                temperature=0.2,
             )
             cand_id = new_candidate_id()
             provider_result = await self._call_provider_async(request, db, run_id)
@@ -995,11 +1074,12 @@ class Worker:
         if verif_model is None:
             logger.warning("No healthy verification model available; completing without verification", run_id=run_id)
         else:
-            request = ProviderGenerateRequest(
-                alias=verif_model["alias"], provider=verif_model["provider"],
-                provider_model=verif_model["provider_model"],
-                system_prompt=None, user_prompt=verif_prompt,
-                max_output_tokens=500, temperature=0.1,
+            request = build_provider_request(
+                verif_model,
+                system_prompt=None,
+                user_prompt=verif_prompt,
+                max_output_tokens=500,
+                temperature=0.1,
             )
             cand_id = new_candidate_id()
             provider_result = await self._call_structured_provider_async(
