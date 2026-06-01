@@ -42,3 +42,34 @@ def test_evaluate_gate_fails_for_low_parity_and_corruption():
     assert decision.overall == "FAIL"
     assert len(decision.failures) == 3
 
+
+# ---------------------------------------------------------------------------
+# E3 fix — shadow parity gate must fail on NO_DATA, not silently PASS
+# ---------------------------------------------------------------------------
+
+def test_compute_metrics_from_rows_no_rows_returns_no_data_marker():
+    """E3 fix: when 0 rows are written, metrics must carry error='NO_DATA'
+    so evaluate_gate() can distinguish 'no signal' from 'parity verified'.
+    Run c908a00b1c834b8eb9ebe2b4 (2026-06-01) had 0 shadow_diff rows and the
+    gate silently PASSed, masking that parity was never observed.
+    """
+    metrics = _compute_metrics_from_rows([], lookback_hours=168)
+    assert metrics["total_runs"] == 0
+    assert metrics["error"] == "NO_DATA"
+
+
+def test_evaluate_gate_fails_on_no_data():
+    """E3 fix: the gate must FAIL when 0 rows in lookback. The old code
+    silently PASSed, which let the langgraph engine run without writing
+    run_shadow_diff for an entire run cycle with no signal to anyone.
+    """
+    metrics = _compute_metrics_from_rows([], lookback_hours=168)
+    decision = evaluate_gate(metrics)
+    assert decision.overall == "FAIL", (
+        f"E3 bug: gate should FAIL on NO_DATA, got {decision.overall}. "
+        f"Failures: {decision.failures}"
+    )
+    assert any("NO_DATA" in f for f in decision.failures), (
+        f"failure list should mention NO_DATA: {decision.failures}"
+    )
+
