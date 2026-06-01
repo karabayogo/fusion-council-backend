@@ -84,3 +84,26 @@ jobs:
           docker load --input /tmp/fusion-council-api.tar || true
           docker run --rm ghcr.io/${{ github.repository_owner }}/fusion-council-backend:sha-${{ steps.short_sha.outputs.sha7 }} --help || true
 
+      # Notify homelab-gitops so the auto-roll-forward workflow can bump the
+      # chart appVersion. The 5-min schedule is the safety net; this dispatch
+      # gives instant promotion on a successful push. Failure here is non-fatal
+      # — the schedule will catch the same image within 5 minutes.
+      - name: Notify homelab-gitops of new image
+        if: github.event_name != 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          HOMELAB_GITOPS_TOKEN: ${{ secrets.HOMELAB_GITOPS_TOKEN }}
+        run: |
+          if [ -z "${HOMELAB_GITOPS_TOKEN:-}" ]; then
+            echo "HOMELAB_GITOPS_TOKEN not set — skipping dispatch. Schedule will pick up within 5 min."
+            exit 0
+          fi
+          SHORT_SHA="sha-${{ steps.short_sha.outputs.sha7 }}"
+          echo "Dispatching backend_image_published (${SHORT_SHA}) to karabayogo/homelab-gitops"
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${HOMELAB_GITOPS_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/karabayogo/homelab-gitops/dispatches" \
+            -d "{\"event_type\": \"backend_image_published\", \"client_payload\": {\"sha\": \"${SHORT_SHA}\"}}"
+          echo "Dispatch sent."
+
