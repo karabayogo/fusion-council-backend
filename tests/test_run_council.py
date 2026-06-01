@@ -158,7 +158,7 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
     assert run is not None
 
     async def fake_provider(request, db, active_run_id, timeout_seconds=300):
-        if request.alias == "opencode-go/deepseek-v4-pro":
+        if request.alias == "primary-researcher":
             return ProviderGenerateResult(
                 success=False,
                 raw_text=None,
@@ -168,7 +168,7 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
                 input_tokens=None,
                 output_tokens=None,
             )
-        if request.alias == "opencode-go/kimi-k2.6":
+        if request.alias == "verifier":
             text = json.dumps({"verdict": "pass", "confidence": 0.8})
         else:
             text = f"healthy response from {request.alias}"
@@ -188,15 +188,15 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
     candidates = list_candidates_for_run(tmp_db, run_id)
     first_failed = [
         c for c in candidates
-        if c["stage"] == "first_opinion" and c["alias"] == "opencode-go/deepseek-v4-pro"
+        if c["stage"] == "first_opinion" and c["alias"] == "primary-researcher"
     ]
     assert first_failed and first_failed[0]["status"] == "failed"
 
     downstream = [c for c in candidates if c["stage"] != "first_opinion"]
     assert downstream, "expected peer/synthesis/verification candidates"
-    assert all(c["alias"] != "opencode-go/deepseek-v4-pro" for c in downstream)
+    assert all(c["alias"] != "primary-researcher" for c in downstream)
     assert all(
-        (c["provider"], c["provider_model"]) != ("opencode_go", "deepseek-v4-pro")
+        (c["provider"], c["provider_model"]) != ("opencode_go", "qwen3.7-max")
         for c in downstream
     )
 

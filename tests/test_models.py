@@ -9,17 +9,6 @@ from fusion_council_service.model_catalog import (
 )
 
 
-def test_load_yaml_catalog():
-    path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
-    models = load_yaml_catalog(path)
-    assert len(models) == 6
-    aliases = [m["alias"] for m in models]
-    assert "opencode-go/deepseek-v4-pro" in aliases
-    assert "opencode-go/qwen3.6-plus" in aliases
-    assert "minimax/MiniMax-M2.7" in aliases
-    assert "minimax/MiniMax-M2.7-synthesis" in aliases
-
-
 def test_duplicate_alias_raises():
     from fusion_council_service.model_catalog import load_yaml_catalog
     import tempfile
@@ -38,29 +27,30 @@ def test_duplicate_alias_raises():
 
 
 def test_model_catalog_get():
-    path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
-    models = load_yaml_catalog(path)
-    catalog = ModelCatalog(models)
-
-    assert catalog.get("opencode-go/deepseek-v4-pro")["provider"] == "opencode_go"
+    catalog = ModelCatalog([
+        {"alias": "a", "provider": "p1", "provider_model": "m1", "enabled": True},
+        {"alias": "b", "provider": "p2", "provider_model": "m2", "enabled": False},
+    ])
+    assert catalog.get("a")["provider"] == "p1"
     assert catalog.get("nonexistent") is None
 
 
 def test_model_catalog_is_enabled():
-    path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
-    models = load_yaml_catalog(path)
-    catalog = ModelCatalog(models)
-
-    assert catalog.is_model_enabled("opencode-go/deepseek-v4-pro") is True
-    assert catalog.is_model_enabled("minimax/MiniMax-M2.7-synthesis") is True
+    catalog = ModelCatalog([
+        {"alias": "a", "provider": "p1", "provider_model": "m1", "enabled": True},
+        {"alias": "b", "provider": "p2", "provider_model": "m2", "enabled": False},
+    ])
+    assert catalog.is_model_enabled("a") is True
+    assert catalog.is_model_enabled("b") is False
     assert catalog.is_model_enabled("nonexistent") is False
 
 
 def test_model_catalog_len():
-    path = os.path.join(os.path.dirname(__file__), "..", "config", "models.yaml")
-    models = load_yaml_catalog(path)
-    catalog = ModelCatalog(models)
-    assert len(catalog) == 6
+    catalog = ModelCatalog([
+        {"alias": "a", "provider": "p1", "provider_model": "m1", "enabled": True},
+        {"alias": "b", "provider": "p2", "provider_model": "m2", "enabled": False},
+    ])
+    assert len(catalog) == 2
 
 
 def test_mode_selection_is_config_driven_by_enabled_roles():

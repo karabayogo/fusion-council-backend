@@ -143,21 +143,16 @@ async def test_council_all_first_opinions_succeed(
 
     mock_side_effect = _build_mock_call_provider_async(
         successes={
-            # First opinions (council mode selects 3 models in this order)
-            "minimax/MiniMax-M2.7": ("MiniMax says yes", 800, 20, 40),
-            "opencode-go/deepseek-v4-pro": ("Deepseek says yes too", 900, 25, 45),
-            "opencode-go/qwen3.6-plus": ("Qwen agrees", 850, 22, 42),
-            # Peer reviews (stage-specific aliases)
-            "opencode-go/qwen3.6-plus-review": ("Qwen peer review", 800, 20, 40),
-            "minimax/MiniMax-M2.7-review": ("MiniMax peer review", 750, 18, 38),
-            "opencode-go/deepseek-v4-pro-review": ("Deepseek peer review", 820, 21, 41),
-            # Debate (creative variant — stage-specific key matches the actual alias)
-            "opencode-go/deepseek-v4-pro-debate": ("Deepseek creative debate", 850, 22, 42),
-            "opencode-go/deepseek-v4-pro-creative": ("Deepseek creative debate", 850, 22, 42),
-            # Synthesis (uses minimax - fusion mode model)
-            "minimax/MiniMax-M2.7-synthesis": (synth_text, 600, 25, 50),
-            # Verification (uses opencode-go/kimi-k2.6 - fusion mode model)
-            "opencode-go/kimi-k2.6-verification": (verify_text, 500, 20, 40),
+            # First opinions (council selects primary, reviewer, creative)
+            "primary-researcher": ("Primary researcher says yes definitely", 900, 25, 45),
+            "reviewer": ("Reviewer finds strong evidence for it", 850, 22, 42),
+            "creative": ("Creative take: unlikely in current form", 800, 20, 40),
+            # Synthesis (role_bias=synthesis)
+            "synthesizer": (synth_text, 600, 25, 50),
+            # Backup (role_bias=backup, used in peer reviews and fallback)
+            "backup": ("Backup model concurs with primary", 750, 18, 38),
+            # Verifier (used in peer reviews, debate, and verification fallback)
+            "verifier": (verify_text, 500, 20, 40),
         },
         failures={},
         fallback_responses={},
@@ -209,17 +204,19 @@ async def test_council_two_first_opinions_succeed_degrades_gracefully(
 
     mock_side_effect = _build_mock_call_provider_async(
         successes={
-            "minimax/MiniMax-M2.7": ("MiniMax answer", 800, 20, 40),
-            "opencode-go/deepseek-v4-pro": ("Deepseek answer", 900, 25, 45),
-            "opencode-go/qwen3.6-plus-synthesis": (synth_text, 600, 25, 50),
-            "opencode-go/qwen3.6-plus-verification": (verify_text, 500, 20, 40),
+            "primary-researcher": ("Deepseek answer", 900, 25, 45),
+            "creative": ("MiniMax answer", 800, 20, 40),
+            # Fallback for failed reviewer
+            "backup": ("Backup fallback answer", 850, 22, 42),
+            # Synthesis
+            "synthesizer": (synth_text, 600, 25, 50),
+            # Verification (via structured fallback)
+            "verifier": (verify_text, 500, 20, 40),
         },
         failures={
-            "opencode-go/qwen3.6-plus": ("HTTP_500", "Provider returned 500: server error"),
+            "reviewer": ("HTTP_500", "Provider returned 500: server error"),
         },
-        fallback_responses={
-            "opencode-go/kimi-k2.6": ("Kimi fallback answer", 850, 22, 42),
-        },
+        fallback_responses={},
     )
 
     with patch.object(worker, "_call_provider_async", side_effect=mock_side_effect):
@@ -250,18 +247,18 @@ async def test_council_quorum_not_met(
 
     mock_side_effect = _build_mock_call_provider_async(
         successes={
-            "MiniMax-M2.7": ("MiniMax answer", 800, 20, 40),
+            "creative": ("MiniMax answer", 800, 20, 40),
         },
         failures={
-            "opencode-go/deepseek-v4-pro": (
+            "primary-researcher": (
                 "HTTP_500",
                 "Provider returned 500: {\"error\":{\"type\":\"AuthError\"}}"
             ),
-            "opencode-go/qwen3.6-plus": (
+            "reviewer": (
                 "PROVIDER_TIMEOUT",
                 "Provider call timed out after 300s"
             ),
-            "opencode-go/kimi-k2.6": (
+            "backup": (
                 "AUTH_FAILED",
                 "API key rejected"
             ),
@@ -304,21 +301,18 @@ async def test_council_http_500_classified_not_masked_as_timeout(
 
     mock_side_effect = _build_mock_call_provider_async(
         successes={
-            "minimax/MiniMax-M2.7": ("MiniMax answer", 800, 20, 40),
-            "opencode-go/kimi-k2.6": ("Kimi fallback answer", 850, 22, 42),
-            "minimax/MiniMax-M2.7-synthesis": (synth_text, 600, 25, 50),
-            "opencode-go/kimi-k2.6-verification": (verify_text, 500, 20, 40),
-            # Peer reviews and debate (required for full pipeline)
-            "opencode-go/kimi-k2.6-review": ("Kimi peer review", 800, 20, 40),
-            "opencode-go/deepseek-v4-pro-review": ("Deepseek peer review", 780, 19, 39),
-            "opencode-go/deepseek-v4-pro-debate": ("Deepseek debate", 820, 21, 42),
+            "creative": ("MiniMax answer", 800, 20, 40),
+            # Fallback models (save the run from quorum failure)
+            "backup": ("Backup fallback answer", 850, 22, 42),
+            "synthesizer": (synth_text, 600, 25, 50),
+            "verifier": (verify_text, 500, 20, 40),
         },
         failures={
-            "opencode-go/deepseek-v4-pro": (
+            "primary-researcher": (
                 "HTTP_500",
                 "Provider returned 500: {\"error\":{\"type\":\"AuthError\",\"message\":\"Invalid API key\"}}"
             ),
-            "opencode-go/qwen3.6-plus": (
+            "reviewer": (
                 "HTTP_500",
                 "Provider returned 500: server error"
             ),
@@ -401,10 +395,10 @@ async def test_council_rejects_insufficient_models(
 
     # Patch select_models_for_mode to return only 2 models for council mode
     thin_council_models = [
-        {"alias": "opencode-go/deepseek-v4-pro", "provider": "opencode_go",
-         "provider_model": "deepseek-v4-pro", "enabled": True},
-        {"alias": "opencode-go/qwen3.6-plus", "provider": "opencode_go",
-         "provider_model": "qwen3.6-plus", "enabled": True},
+        {"alias": "primary-researcher", "provider": "opencode_go",
+         "provider_model": "qwen3.7-max", "enabled": True},
+        {"alias": "reviewer", "provider": "opencode_go",
+         "provider_model": "kimi-k2.6", "enabled": True},
     ]
 
     def thin_select(mode, catalog, requested=None):
