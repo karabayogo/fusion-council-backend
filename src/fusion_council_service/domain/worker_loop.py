@@ -255,6 +255,18 @@ class Worker:
             ),
         )
 
+    @property
+    def catalog(self) -> ModelCatalog:
+        """Public accessor for the model catalog.
+
+        Required so LangGraph orchestration nodes can access the catalog via
+        ``worker.catalog`` (they cannot access the private ``_catalog``).
+        Without this property, any council/fusion run through LangGraph crashes
+        with ``AttributeError: 'Worker' object has no attribute 'catalog'``
+        (root cause of PEER_CATALOG_ERROR in run_14898b9d836340a2a6c50bf0).
+        """
+        return self._catalog
+
     def _get_db(self):
         if self._db is None:
             self._db = new_session()
@@ -401,6 +413,41 @@ class Worker:
                 upstream_pairs.add((provider, provider_model))
         return aliases, upstream_pairs
 
+    def _failed_providers(self, db: object, run_id: str) -> set[str]:
+        """Return providers where ALL their models have failed for this run.
+
+        When a provider returns a systemic error (e.g. 401 Unauthorized, 503),
+        every model on that provider will fail. Rather than trying each model
+        one-by-one and burning deadline budget, detect providers that are
+        completely down and skip them entirely in fallback selection.
+
+        A provider is considered failed when every enabled model in the catalog
+        for that provider has a failed candidate for this run.
+        """
+        # Get all enabled models grouped by provider
+        provider_models: dict[str, list[dict]] = {}
+        for model in self._catalog.enabled_models():
+            provider = model.get("provider", "")
+            if provider:
+                provider_models.setdefault(provider, []).append(model)
+
+        # Get failed candidates for this run
+        failed_aliases, failed_pairs = self._failed_model_identities(db, run_id)
+        failed_providers: set[str] = set()
+
+        for provider, models in provider_models.items():
+            if not models:
+                continue
+            # Check if ALL models for this provider have failed
+            all_failed = all(
+                m["alias"] in failed_aliases or (provider, m.get("provider_model", "")) in failed_pairs
+                for m in models
+            )
+            if all_failed:
+                failed_providers.add(provider)
+
+        return failed_providers
+
     def _select_stage_model(
         self,
         db: object,
@@ -465,6 +512,10 @@ class Worker:
         the same alias or the same (provider, provider_model) pair causes noisy
         duplicate candidates, burns deadline budget, and does not improve quorum
         diversity when an upstream provider/model is unhealthy.
+
+        When an entire provider is down (e.g. 401 on all its models), skip ALL
+        models from that provider rather than trying them one-by-one and burning
+        the run's deadline budget. See _failed_providers for detection logic.
         """
         mode = run["mode"]
         active_models = select_models_for_mode(mode, self._catalog)
@@ -475,10 +526,23 @@ class Worker:
         blocked_pairs.update(attempted_pairs)
         blocked_aliases.add(failed_alias)
 
+        # Skip entire providers where ALL models have failed (systemic provider
+        # outage like 401/503). Without this, the fallback tries each model on
+        # the dead provider one-by-one, burning 5+ minutes per model.
+        failed_providers = self._failed_providers(db, run["run_id"])
+
         for model in self._catalog.enabled_models():
             alias = model["alias"]
-            pair = (model.get("provider", ""), model.get("provider_model", ""))
+            provider = model.get("provider", "")
+            pair = (provider, model.get("provider_model", ""))
             if alias in blocked_aliases or pair in blocked_pairs:
+                continue
+            if provider in failed_providers:
+                logger.info(
+                    f"Skipping fallback {alias}: provider {provider} is fully down "
+                    f"(all {len([m for m in self._catalog.enabled_models() if m.get('provider') == provider])} models failed)",
+                    run_id=run["run_id"],
+                )
                 continue
             emit_fallback_promoted(db, run["run_id"], alias, failed_alias)
             logger.info(f"Fallback promoted: {alias} replacing {failed_alias}", run_id=run["run_id"])
