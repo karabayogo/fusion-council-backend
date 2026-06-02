@@ -183,7 +183,12 @@ def _run_alembic_migrations() -> None:
     if db_path == ":memory:":
         return
 
-    alembic_cfg_path = Path(__file__).parents[2] / "alembic.ini"
+    alembic_cfg_path_env = os.environ.get("ALEMBIC_CFG_PATH", "")
+    if alembic_cfg_path_env:
+        alembic_cfg_path = Path(alembic_cfg_path_env)
+    else:
+        alembic_cfg_path = Path(__file__).parents[2] / "alembic.ini"
+
     if not alembic_cfg_path.exists():
         logger.warning("alembic.ini not found — skipping Alembic migrations")
         return
