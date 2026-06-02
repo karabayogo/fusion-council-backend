@@ -31,6 +31,7 @@ from fusion_council_service.domain.scoring import (
     select_best_candidate,
 )
 from fusion_council_service.domain.structured_output import invoke_structured_or_freetext
+from fusion_council_service.domain.timeout_result import build_timeout_result  # W4: timeout result dedup
 from fusion_council_service.domain.types import ProviderGenerateRequest, ProviderGenerateResult
 from fusion_council_service.ids import new_candidate_id
 from fusion_council_service.logging_utils import get_logger
@@ -589,15 +590,7 @@ class Worker:
                 f"Provider call timed out after {effective_timeout}s for {request.alias}",
                 run_id=run_id,
             )
-            return ProviderGenerateResult(
-                success=False,
-                raw_text=None,
-                error_code='PROVIDER_TIMEOUT',
-                error_message=f'Provider call timed out after {effective_timeout}s',
-                latency_ms=effective_timeout * 1000,
-                input_tokens=None,
-                output_tokens=None,
-            )
+            return build_timeout_result(effective_timeout, run_id)  # W4: dedup
 
     async def _call_structured_provider_async(
         self,
@@ -668,15 +661,7 @@ class Worker:
                 f"Structured provider call timed out after {timeout_seconds}s for {request.alias}",
                 run_id=run_id,
             )
-            return ProviderGenerateResult(
-                success=False,
-                raw_text=None,
-                error_code="PROVIDER_TIMEOUT",
-                error_message=f"Provider call timed out after {effective_timeout}s",
-                latency_ms=effective_timeout * 1000,
-                input_tokens=None,
-                output_tokens=None,
-            )
+            return build_timeout_result(effective_timeout, run_id)  # W4: dedup
 
     async def _run_single(self, db: object, run: dict) -> None:
         """Execute a single-mode run."""

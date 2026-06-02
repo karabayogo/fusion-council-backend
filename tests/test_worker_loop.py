@@ -87,7 +87,19 @@ async def test_provider_timeout_returns_error(mock_worker):
     worker = mock_worker
     # Mock _run_provider_sync to block longer than the test timeout
     import fusion_council_service.domain.worker_loop as wl
-    with patch.object(wl, "_run_provider_sync", side_effect=lambda *a, **k: time.sleep(200)):
+    # W4: spy on build_timeout_result to confirm the timeout path uses the helper.
+    # Patch on `wl` (the module that owns the call site) because the import is
+    # a local binding in worker_loop, not a late-bound attribute lookup.
+    from fusion_council_service.domain import timeout_result as tr
+    spy_calls: list[tuple[int, str]] = []
+    real_helper = tr.build_timeout_result
+
+    def spy(effective_timeout: int, run_id: str):
+        spy_calls.append((effective_timeout, run_id))
+        return real_helper(effective_timeout, run_id)
+
+    with patch.object(wl, "_run_provider_sync", side_effect=lambda *a, **k: time.sleep(200)), \
+         patch.object(wl, "build_timeout_result", side_effect=spy):
         from fusion_council_service.domain.types import ProviderGenerateRequest
         req = ProviderGenerateRequest(
             alias="mock", provider="mock", provider_model="mock-v1",
@@ -99,6 +111,10 @@ async def test_provider_timeout_returns_error(mock_worker):
         elapsed = time.monotonic() - start
 
     assert elapsed < 3, f"Test took {elapsed:.1f}s, expected <3s"
+    # W4: helper must be called exactly once with the resolved effective_timeout
+    assert len(spy_calls) == 1, f"build_timeout_result should be called once, got {len(spy_calls)}"
+    assert spy_calls[0][0] == 1, f"effective_timeout should be 1s, got {spy_calls[0][0]}"
+    assert spy_calls[0][1] == "test-run", f"run_id should be 'test-run', got {spy_calls[0][1]!r}"
     assert result.success is False
     assert result.error_code == "PROVIDER_TIMEOUT"
     assert "timed out after 1s" in result.error_message
