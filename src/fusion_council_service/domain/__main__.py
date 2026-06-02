@@ -49,6 +49,17 @@ def main() -> None:
     catalog = load_and_validate_catalog(settings, db)
     logger.info(f"Model catalog loaded: {len(catalog)} models")
 
+    # W1: reconcile stale provider_health rows against the fresh catalog.
+    # Run AFTER load_and_validate_catalog returns and BEFORE run_startup_sync
+    # so dispatch sees a clean provider_health table.
+    from fusion_council_service.domain.model_selection import reconcile_provider_health_with_catalog
+    _reconciled = reconcile_provider_health_with_catalog(db, catalog)
+    if _reconciled:
+        logger.info(
+            f"reconciled {_reconciled} stale provider_health rows at worker startup",
+            event_type="provider_health.reconciled_at_startup",
+        )
+
     registry = build_provider_registry(settings)
 
     worker = Worker(

@@ -125,6 +125,17 @@ async def lifespan(app: FastAPI):
     _catalog = load_and_validate_catalog(_settings, db)
     logger.info(f"Model catalog loaded: {len(_catalog)} models", event_type="catalog.loaded")
 
+    # W1: reconcile stale provider_health rows against the fresh catalog.
+    # Run AFTER load_and_validate_catalog returns (so the catalog is fresh)
+    # and BEFORE run_startup (so dispatch sees a clean provider_health table).
+    from fusion_council_service.domain.model_selection import reconcile_provider_health_with_catalog
+    _reconciled = reconcile_provider_health_with_catalog(db, _catalog)
+    if _reconciled:
+        logger.info(
+            f"reconciled {_reconciled} stale provider_health rows at API startup",
+            event_type="provider_health.reconciled_at_startup",
+        )
+
     # Build provider registry
     _registry = build_provider_registry(_settings)
     logger.info("Provider registry built", event_type="providers.ready")

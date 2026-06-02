@@ -17,7 +17,10 @@ from typing import Optional
 
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import execute_sql, execute_sql_one, execute_sql_all, commit_tx, is_postgresql
+from fusion_council_service.logging_utils import get_logger
 from fusion_council_service.model_catalog import ModelCatalog
+
+logger = get_logger("fusion_council_service.domain.model_selection")
 
 
 def current_run_failed_identities(db: object, run_id: str) -> tuple[set[str], set[tuple[str, str]]]:
@@ -296,3 +299,46 @@ def select_healthy_stage_model(
         if role_matches:
             return role_matches[0]
     return enabled[0] if enabled else None
+
+
+# ── W1: Catalog/Health reconciliation ────────────────────────────────────────
+
+
+def reconcile_provider_health_with_catalog(db: object, catalog: ModelCatalog) -> int:
+    """Delete any provider_health row whose (provider, provider_model) is not in catalog.
+
+    Returns the number of deleted rows. Safe to call at startup — it only deletes
+    rows whose upstream pair is no longer in the model catalog. Logs the deleted
+    count at INFO. Idempotent: re-running after a clean reconcile is a no-op.
+
+    The dual schema.sql + Alembic pattern means this is also enforced at migration
+    time (003_reconcile_provider_health.py) — this helper closes the same gap at
+    startup for deploys that pre-date the migration.
+    """
+    valid_pairs: set[tuple[str, str]] = set()
+    for model in catalog.enabled_models():
+        provider = model.get("provider")
+        provider_model = model.get("provider_model")
+        if provider and provider_model:
+            valid_pairs.add((provider, provider_model))
+
+    rows = execute_sql_all(
+        db,
+        "SELECT provider, provider_model FROM provider_health",
+    )
+    deleted = 0
+    for row in rows:
+        pair = (row.get("provider"), row.get("provider_model"))
+        if pair not in valid_pairs:
+            execute_sql(
+                db,
+                "DELETE FROM provider_health WHERE provider = :p AND provider_model = :m",
+                {"p": pair[0], "m": pair[1]},
+            )
+            deleted += 1
+    if deleted:
+        logger.info(
+            f"reconcile_provider_health: deleted {deleted} stale rows not in catalog",
+            event_type="provider_health.reconciled",
+        )
+    return deleted

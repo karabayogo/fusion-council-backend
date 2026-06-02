@@ -60,15 +60,27 @@ def load_yaml_catalog(catalog_path: str) -> list[dict]:
     return models
 
 
-def validate_minimax(api_key: str, base_url: str) -> None:
+def validate_minimax(api_key: str, base_url: str, enabled_minimax_provider_models: list[str]) -> None:
     """Validate MiniMax Token Plan access by making a trivial completion call.
 
     Set SKIP_PROVIDER_VALIDATION=1 to skip this check entirely (useful for CI,
     air-gapped environments, or when the upstream API is known-unavailable).
+
+    `enabled_minimax_provider_models` is the list of `provider_model` values from
+    config/models.yaml where `provider == "minimax_token_plan"`. The function
+    probes each enabled model. If multiple are enabled, all are validated in a
+    loop. If the list is empty, the function returns without making any API call.
+
+    W1 spec: this function must NOT hardcode a model name. The pre-W1 code
+    hardcoded `MiniMax-M2.7` even though the active catalog entry is `MiniMax-M3`.
     """
     import os
     if os.environ.get("SKIP_PROVIDER_VALIDATION", "").strip() in ("1", "true", "yes"):
         logger.info("MiniMax validation skipped (SKIP_PROVIDER_VALIDATION=1)", event_type="model.validation_skipped")
+        return
+
+    if not enabled_minimax_provider_models:
+        # No enabled MiniMax models → nothing to validate.
         return
 
     import anthropic
@@ -77,17 +89,18 @@ def validate_minimax(api_key: str, base_url: str) -> None:
         base_url=base_url,
         api_key=api_key,
     )
-    try:
-        response = client.messages.create(
-            model="MiniMax-M2.7",
-            max_tokens=5,
-            messages=[{"role": "user", "content": "Hi"}],
-        )
-        logger.info("MiniMax validation passed", event_type="model.validated")
-    except anthropic.AuthenticationError as e:
-        raise RuntimeError(f"MiniMax auth failed: {e}") from e
-    except Exception as e:
-        raise RuntimeError(f"MiniMax validation error: {e}") from e
+    for model in enabled_minimax_provider_models:
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=5,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            logger.info(f"MiniMax validation passed for {model}", event_type="model.validated")
+        except anthropic.AuthenticationError as e:
+            raise RuntimeError(f"MiniMax auth failed for {model}: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"MiniMax validation error for {model}: {e}") from e
 
 
 def validate_ollama_models(api_key: str, base_url: str, expected_models: list[str]) -> dict[str, str]:
@@ -166,11 +179,16 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
     models = load_yaml_catalog(settings.MODEL_CATALOG_PATH)
 
     # Validate MiniMax only if any minimax models are configured
-    minimax_models = [m for m in models if m["provider"] == "minimax_token_plan"]
+    minimax_models = [m for m in models if m["provider"] == "minimax_token_plan" and m.get("enabled", True)]
     if minimax_models:
         if not settings.minimax_api_key_effective:
             raise RuntimeError("MINIMAX_API_KEY is required when provider minimax_token_plan is configured")
-        validate_minimax(settings.minimax_api_key_effective, settings.MINIMAX_ANTHROPIC_BASE_URL)
+        enabled_minimax_provider_models = [m["provider_model"] for m in minimax_models]
+        validate_minimax(
+            settings.minimax_api_key_effective,
+            settings.MINIMAX_ANTHROPIC_BASE_URL,
+            enabled_minimax_provider_models,
+        )
 
     # Validate Ollama only if any ollama models are configured
     ollama_models = [m for m in models if m["provider"] == "ollama_cloud"]
