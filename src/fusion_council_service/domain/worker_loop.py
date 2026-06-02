@@ -41,6 +41,64 @@ from fusion_council_service.providers.registry import ProviderRegistry
 # Lazy-imported inside _recover_langgraph_stale_runs() to avoid import-time asyncpg dependency.
 logger = get_logger("fusion_council_service.worker_loop")
 
+def _apply_verification_result(
+    *,
+    db: object,
+    cand_id: str,
+    candidate: dict,
+    raw_text: str,
+    synthesis_text: str,
+    current_confidence: float,
+    verif_alias: str,
+    run_id: str,
+) -> tuple[float, str]:
+    """Apply a verification candidate result with the E2 short-output guard.
+
+    Returns (final_confidence, final_synthesis_text). Both council and fusion
+    paths funnel through here so the guard is consistent — never accept a
+    <MIN_VERIFICATION_TOKENS output as a verdict, never let a non-answer
+    depress the synthesis. If the output is suspiciously short, we mark the
+    candidate with error_code=VERIFICATION_TOO_SHORT, pin confidence=0.5, and
+    prepend [INSUFFICIENT EVIDENCE] to the synthesis. Otherwise we honor
+    the parsed verdict (abstain still prefixes the synthesis).
+
+    This is the E2 fix factored out of the inline council code so fusion
+    mode gets the same protection (PR #26 only patched the council path).
+    """
+    verif_out_tokens = int(candidate.get("output_tokens") or 0)
+    if verif_out_tokens < MIN_VERIFICATION_TOKENS:
+        logger.warning(
+            f"verification output too short ({verif_out_tokens} tokens < {MIN_VERIFICATION_TOKENS}); "
+            f"rejecting verdict from {verif_alias}, keeping confidence=0.5",
+            run_id=run_id,
+        )
+        execute_sql(
+            db,
+            "UPDATE run_candidates SET error_code=:ec, error_message=:em WHERE candidate_id=:cid",
+            {
+                "ec": "VERIFICATION_TOO_SHORT",
+                "em": f"output_tokens={verif_out_tokens} < MIN_VERIFICATION_TOKENS={MIN_VERIFICATION_TOKENS}",
+                "cid": cand_id,
+            },
+        )
+        commit_tx(db)
+        return (
+            0.5,
+            f"[INSUFFICIENT EVIDENCE — confidence: 0.5] (verification rejected: {verif_out_tokens} tokens)\n{synthesis_text}",
+        )
+    try:
+        parsed = _VerificationPayload.model_validate_json(raw_text)
+        confidence = float(parsed.confidence)
+        if parsed.verdict.strip().lower() == "abstain":
+            return (
+                confidence,
+                f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}",
+            )
+        return (confidence, synthesis_text)
+    except Exception:
+        return (current_confidence, synthesis_text)
+
+
 # Thread pool for blocking provider calls
 _executor = ThreadPoolExecutor(max_workers=10)
 
@@ -816,13 +874,16 @@ class Worker:
         )
         if candidate:
             raw_text = candidate.get("normalized_answer", "")
-            try:
-                parsed = _VerificationPayload.model_validate_json(raw_text)
-                confidence = float(parsed.confidence)
-                if parsed.verdict.strip().lower() == "abstain":
-                    final_answer = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
-            except Exception:
-                pass
+            confidence, final_answer = _apply_verification_result(
+                db=db,
+                cand_id=cand_id,
+                candidate=candidate,
+                raw_text=raw_text,
+                synthesis_text=synthesis_text,
+                current_confidence=confidence,
+                verif_alias=verif_model["alias"],
+                run_id=run_id,
+            )
 
         execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
                     {"now": utc_now_iso(), "final_answer": final_answer, "confidence": confidence, "run_id": run_id})
@@ -1105,41 +1166,16 @@ class Worker:
             candidate = self._record_stage_candidate_result(db, run_id, cand_id, verif_model, "verification", provider_result)
             if candidate:
                 raw_text = candidate.get("normalized_answer", "")
-                # E2 guard: reject verification outputs that are too short to
-                # be a real verdict. Structured-output failures routinely return
-                # 10-30 tokens of empty/garbage JSON that model_validate_json
-                # happens to accept. We must catch that here and refuse to
-                # accept the verdict — fall back to neutral 0.5 confidence
-                # rather than letting a non-answer depress the synthesis.
-                verif_out_tokens = int(candidate.get("output_tokens") or 0)
-                if verif_out_tokens < MIN_VERIFICATION_TOKENS:
-                    logger.warning(
-                        f"verification output too short ({verif_out_tokens} tokens < {MIN_VERIFICATION_TOKENS}); "
-                        f"rejecting verdict from {verif_model['alias']}, keeping confidence=0.5",
-                        run_id=run_id,
-                    )
-                    # Mark this candidate as failed with a clear error_code so
-                    # run_orchestration_state carries the signal for telemetry.
-                    execute_sql(
-                        db,
-                        "UPDATE run_candidates SET error_code=:ec, error_message=:em WHERE candidate_id=:cid",
-                        {
-                            "ec": "VERIFICATION_TOO_SHORT",
-                            "em": f"output_tokens={verif_out_tokens} < MIN_VERIFICATION_TOKENS={MIN_VERIFICATION_TOKENS}",
-                            "cid": cand_id,
-                        },
-                    )
-                    commit_tx(db)
-                    synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: 0.5] (verification rejected: {verif_out_tokens} tokens)\n{synthesis_text}"
-                    confidence = 0.5
-                else:
-                    try:
-                        parsed = _VerificationPayload.model_validate_json(raw_text)
-                        confidence = float(parsed.confidence)
-                        if parsed.verdict.strip().lower() == "abstain":
-                            synthesis_text = f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}"
-                    except Exception:
-                        pass
+                confidence, synthesis_text = _apply_verification_result(
+                    db=db,
+                    cand_id=cand_id,
+                    candidate=candidate,
+                    raw_text=raw_text,
+                    synthesis_text=synthesis_text,
+                    current_confidence=confidence,
+                    verif_alias=verif_model["alias"],
+                    run_id=run_id,
+                )
 
         execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
                     {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})

@@ -70,7 +70,18 @@ async def test_fusion_verification_uses_structured_output_path(tmp_db, model_cat
     completed = get_run(tmp_db, run["run_id"])
     assert completed is not None
     assert completed["status"] == "succeeded"
-    assert abs(float(completed["final_confidence"]) - 0.84) < 1e-9
+    # _StructuredRegistry emits 7 output_tokens — same E2 short-output guard
+    # that the council path uses (after _apply_verification_result() was
+    # factored out in PR #28). The guard correctly rejects the verdict and
+    # pins final_confidence=0.5. The structured-output path is still
+    # exercised end-to-end (registry.calls[0].response_format is set).
+    assert abs(float(completed["final_confidence"]) - 0.5) < 1e-9, (
+        f"E2 guard should pin final_confidence=0.5 for short verification; "
+        f"got {completed['final_confidence']}"
+    )
+    assert "[INSUFFICIENT EVIDENCE" in (completed.get("final_answer") or ""), (
+        "E2 guard should prepend [INSUFFICIENT EVIDENCE] to final_answer for short verification"
+    )
     assert registry.calls, "Expected structured verification call via registry.generate"
     assert registry.calls[0].response_format is not None
 
