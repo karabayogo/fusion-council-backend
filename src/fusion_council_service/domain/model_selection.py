@@ -208,6 +208,12 @@ def record_candidate_outcome(
         )
     commit_tx(db)
 
+    # W2: feed the post-update health_score into the quarantine state machine.
+    # `health_score` is the local variable computed above from the post-update counters
+    # and EMA latency. This runs AFTER the commit so the quarantine decision is based
+    # on the persisted state, not the in-memory mid-transaction view.
+    evaluate_quarantine_transition(db, provider, provider_model, health_score)
+
 
 def get_health_scores(db: object) -> dict[tuple[str, str], float]:
     """Return a dict mapping (provider, provider_model) -> health_score."""
@@ -277,11 +283,19 @@ def select_healthy_stage_model(
     health_scores = get_health_scores(db)
     recent_failures = recent_failure_counts_by_upstream(db, run_id)
     original_order = {model.get("alias", ""): idx for idx, model in enumerate(catalog.enabled_models())}
+    # W2: durable quarantine exclusion. Compute once at the top of the function so
+    # the per-model `usable()` check is O(1) per model.
+    quarantined_pairs = get_quarantined_pairs(db)
 
     def usable(model: dict) -> bool:
         alias = model.get("alias", "")
         pair = (model.get("provider", ""), model.get("provider_model", ""))
-        return alias not in avoid_aliases and alias not in failed_aliases and pair not in failed_pairs
+        return (
+            alias not in avoid_aliases
+            and alias not in failed_aliases
+            and pair not in failed_pairs
+            and pair not in quarantined_pairs  # W2: durable quarantine exclusion
+        )
 
     def health_key(model: dict) -> tuple[float, int]:
         pair = (model.get("provider", ""), model.get("provider_model", ""))
@@ -342,3 +356,92 @@ def reconcile_provider_health_with_catalog(db: object, catalog: ModelCatalog) ->
             event_type="provider_health.reconciled",
         )
     return deleted
+
+
+# ── W2: Durable Quarantine State ────────────────────────────────────────────
+
+QUARANTINE_HEALTH_THRESHOLD = 0.3
+QUARANTINE_STREAK_REQUIRED = 3
+
+
+def evaluate_quarantine_transition(
+    db: object,
+    provider: str,
+    provider_model: str,
+    new_health_score: float,
+) -> None:
+    """Update the streak/quarantine columns for one upstream pair after a health score change.
+
+    - If new_health_score < QUARANTINE_HEALTH_THRESHOLD: increment consecutive_low_health_count
+    - If new_health_score >= QUARANTINE_HEALTH_THRESHOLD: reset consecutive_low_health_count to 0
+    - If the post-increment streak reaches QUARANTINE_STREAK_REQUIRED AND the pair is not already
+      quarantined: set quarantined=1, quarantined_at=now, quarantine_reason; append one audit row.
+
+    Idempotent in the sense that re-applying the same health score does not append a duplicate
+    audit row (the "not already quarantined" guard).
+    """
+    now = utc_now_iso()
+    row = execute_sql_one(
+        db,
+        "SELECT consecutive_low_health_count, quarantined FROM provider_health "
+        "WHERE provider = :p AND provider_model = :m",
+        {"p": provider, "m": provider_model},
+    )
+    if row is None:
+        return  # no provider_health row yet (candidate outcome not yet recorded)
+
+    current_streak = int(row.get("consecutive_low_health_count") or 0)
+    is_quarantined = bool(row.get("quarantined") or 0)
+
+    if new_health_score < QUARANTINE_HEALTH_THRESHOLD:
+        new_streak = current_streak + 1
+    else:
+        new_streak = 0
+
+    became_quarantined = (
+        new_streak >= QUARANTINE_STREAK_REQUIRED and not is_quarantined
+    )
+
+    if became_quarantined:
+        reason = (
+            f"streak={new_streak} consecutive low-health updates "
+            f"(health_score={new_health_score:.4f} < {QUARANTINE_HEALTH_THRESHOLD})"
+        )
+        execute_sql(
+            db,
+            "UPDATE provider_health SET consecutive_low_health_count=:s, quarantined=1, "
+            "quarantined_at=:at, quarantine_reason=:r "
+            "WHERE provider=:p AND provider_model=:m",
+            {"s": new_streak, "at": now, "r": reason, "p": provider, "m": provider_model},
+        )
+        execute_sql(
+            db,
+            "INSERT INTO provider_quarantine_events "
+            "(provider, provider_model, event_type, reason, health_score, "
+            "consecutive_low_health_count, created_at) "
+            "VALUES (:p, :m, 'quarantine', :r, :h, :s, :at)",
+            {
+                "p": provider, "m": provider_model, "r": reason,
+                "h": new_health_score, "s": new_streak, "at": now,
+            },
+        )
+        logger.warning(
+            f"quarantined ({provider}, {provider_model}): {reason}",
+            event_type="provider.quarantined",
+        )
+    else:
+        execute_sql(
+            db,
+            "UPDATE provider_health SET consecutive_low_health_count=:s "
+            "WHERE provider=:p AND provider_model=:m",
+            {"s": new_streak, "p": provider, "m": provider_model},
+        )
+
+
+def get_quarantined_pairs(db: object) -> set[tuple[str, str]]:
+    """Return the set of (provider, provider_model) pairs currently quarantined."""
+    rows = execute_sql_all(
+        db,
+        "SELECT provider, provider_model FROM provider_health WHERE quarantined = 1",
+    )
+    return {(r.get("provider"), r.get("provider_model")) for r in rows}

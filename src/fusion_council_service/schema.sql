@@ -100,8 +100,25 @@ CREATE TABLE IF NOT EXISTS provider_health (
   avg_latency_ms REAL DEFAULT 0,
   health_score REAL DEFAULT 1.0,
   updated_at TEXT NOT NULL,
+  consecutive_low_health_count INTEGER NOT NULL DEFAULT 0,  -- W2: durable quarantine state
+  quarantined INTEGER NOT NULL DEFAULT 0,                   -- W2: durable quarantine state
+  quarantined_at TEXT,                                      -- W2: durable quarantine state
+  quarantine_reason TEXT,                                   -- W2: durable quarantine state
   PRIMARY KEY (provider, provider_model)
 );
+
+CREATE TABLE IF NOT EXISTS provider_quarantine_events (       -- W2: durable quarantine audit log
+  id BIGSERIAL PRIMARY KEY,
+  provider TEXT NOT NULL,
+  provider_model TEXT NOT NULL,
+  event_type TEXT NOT NULL,         -- quarantine | unquarantine
+  reason TEXT NOT NULL,
+  health_score REAL,
+  consecutive_low_health_count INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_quarantine_events_pair
+  ON provider_quarantine_events(provider, provider_model);
 
 CREATE TABLE IF NOT EXISTS decision_log (
   run_id TEXT PRIMARY KEY,
