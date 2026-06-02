@@ -309,3 +309,67 @@ async def test_verification_short_output_rejected_with_insufficient_evidence(moc
         f"E2 fix missing: verification candidate error_code={verif_cand['error_code']!r}, "
         f"expected 'VERIFICATION_TOO_SHORT'"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 6 (PR #28) — fusion mode also uses _apply_verification_result
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fusion_short_verification_rejected_with_insufficient_evidence(mock_worker, tmp_db):
+    """PR #28: the E2 short-output guard was factored into _apply_verification_result
+    and the fusion-mode _run_fusion path now uses it too. Without this, the
+    fusion path would still silently accept kimi-k2.6-style 19-token verdicts.
+    Same lock-the-guard test as council, but exercising _run_fusion.
+    """
+    worker = mock_worker
+    run_id = "run_e2_fusion_short"
+    insert_run(
+        db=tmp_db, run_id=run_id, mode="fusion", prompt="p",
+        system_prompt=None, temperature=0.2, max_output_tokens=1000,
+        deadline_seconds=120, deadline_at=utc_now_plus_seconds(120),
+        owner_token_hash="h", metadata_json="{}", requested_models_json=None,
+        created_at=utc_now_iso(),
+    )
+    run = dict(tmp_db.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+
+    # First-opinion and synthesis return 100 tokens; verification returns 4 tokens (< floor).
+    short_verif_result = (True, '{"verdict":"approve","confidence":0.1}', None, None, 2000, 50, 4)
+    fake_opinion_result = (True, "fake opinion text that is at least one hundred tokens " * 10,
+                           None, None, 500, 10, 100)
+    fake_synth_result = (True, "synthesized answer with sufficient tokens " * 20,
+                         None, None, 500, 10, 200)
+
+    async def fake_call_provider_async(request, db, rid):
+        prompt = request.user_prompt or ""
+        if "Below are answers from multiple AI models" in prompt or "You are a senior editor" in prompt:
+            return fake_synth_result
+        return fake_opinion_result
+
+    async def fake_call_structured_provider_async(request, schema, db, rid):
+        return short_verif_result
+
+    with patch.object(worker, "_call_provider_async", side_effect=fake_call_provider_async), \
+         patch.object(worker, "_call_structured_provider_async", side_effect=fake_call_structured_provider_async):
+        await worker._run_fusion(tmp_db, run)
+
+    final_row = tmp_db.execute(
+        "SELECT status, final_confidence, final_answer FROM runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    assert final_row["status"] == "succeeded"
+    assert final_row["final_confidence"] == 0.5, (
+        f"PR #28 regression: fusion path short verification confidence was accepted "
+        f"(got {final_row['final_confidence']}, expected 0.5)"
+    )
+    assert "[INSUFFICIENT EVIDENCE" in final_row["final_answer"], (
+        "PR #28 regression: fusion path missing INSUFFICIENT EVIDENCE prefix"
+    )
+    verif_cand = tmp_db.execute(
+        "SELECT error_code FROM run_candidates "
+        "WHERE run_id = ? AND stage = 'verification'",
+        (run_id,),
+    ).fetchone()
+    assert verif_cand is not None
+    assert verif_cand["error_code"] == "VERIFICATION_TOO_SHORT", (
+        f"PR #28 regression: fusion verification candidate error_code={verif_cand['error_code']!r}"
+    )
