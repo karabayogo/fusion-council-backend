@@ -112,6 +112,28 @@ def test_reconcile_is_idempotent(tmp_db: sqlite3.Connection) -> None:
     assert third == 0
 
 
+def test_reconcile_commits_cleanup(tmp_db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reconcile must commit its cleanup so rollout startup doesn't hold locks."""
+    commit_calls: list[sqlite3.Connection] = []
+    monkeypatch.setattr(
+        "fusion_council_service.domain.model_selection.commit_tx",
+        lambda db: commit_calls.append(db),
+    )
+
+    _seed_provider_health_row(tmp_db, "minimax_token_plan", "MiniMax-M2.7", health_score=0.07)
+    catalog = _SyntheticCatalog(
+        models=[
+            {"provider": "minimax_token_plan", "provider_model": "MiniMax-M3", "enabled": True},
+        ]
+    )
+
+    deleted = reconcile_provider_health_with_catalog(tmp_db, catalog)
+
+    assert deleted == 1
+    assert len(commit_calls) == 1
+    assert ("minimax_token_plan", "MiniMax-M2.7") not in _all_pairs(tmp_db)
+
+
 def test_reconcile_handles_empty_provider_health(tmp_db: sqlite3.Connection) -> None:
     """Empty provider_health is a no-op."""
     catalog = _SyntheticCatalog(

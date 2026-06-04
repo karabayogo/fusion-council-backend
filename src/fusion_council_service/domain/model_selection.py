@@ -350,6 +350,12 @@ def reconcile_provider_health_with_catalog(db: object, catalog: ModelCatalog) ->
                 {"p": pair[0], "m": pair[1]},
             )
             deleted += 1
+    # Commit the cleanup immediately so we do not hold row locks across the rest
+    # of startup. Multiple pods can call this helper during a rollout, and an
+    # uncommitted DELETE would keep the transaction open long enough to block the
+    # next pod's reconcile pass and starve startup.
+    commit_tx(db)
+
     if deleted:
         logger.info(
             f"reconcile_provider_health: deleted {deleted} stale rows not in catalog",
