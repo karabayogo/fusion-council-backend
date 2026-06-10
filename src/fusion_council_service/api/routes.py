@@ -478,17 +478,20 @@ async def stream_run_events(
                 terminal_seen = False
                 for event in events:
                     seen = max(seen, int(event["seq"]))
-                    yield f"event: {event['event_type']}\ndata: {json.dumps(event)}\n\n".encode()
+                    # Emit default 'message' events only - browsers receive these via EventSource.onmessage
+                    # Custom event names (event: X) are NOT received by onmessage
+                    yield f"data: {json.dumps(event)}\n\n".encode()
                     if event["event_type"] in terminal_events:
                         terminal_seen = True
 
                 if terminal_seen:
-                    yield "event: END\ndata: {\"done\": true}\n\n".encode()
+                    # Terminal envelope uses default message event too
+                    yield "data: {\"done\": true, \"event_type\": \"terminal\"}\n\n".encode()
                     return
             else:
                 latest_run = get_run(db, run_id)
                 if latest_run and latest_run["status"] in terminal_statuses:
-                    yield "event: END\ndata: {\"done\": true}\n\n".encode()
+                    yield "data: {\"done\": true, \"event_type\": \"terminal\"}\n\n".encode()
                     return
 
             await asyncio.sleep(poll_interval)

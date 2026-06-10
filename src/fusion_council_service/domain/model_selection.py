@@ -451,3 +451,62 @@ def get_quarantined_pairs(db: object) -> set[tuple[str, str]]:
         "SELECT provider, provider_model FROM provider_health WHERE quarantined = 1",
     )
     return {(r.get("provider"), r.get("provider_model")) for r in rows}
+
+
+# Error codes that warrant immediate quarantine - auth/config issues won't fix themselves
+_IMMEDIATE_QUARANTINE_ERROR_CODES = frozenset({"AUTH_FAILED", "HTTP_401", "HTTP_403"})
+
+
+def quarantine_on_auth_failure(
+    db: object,
+    provider: str,
+    provider_model: str,
+    error_code: Optional[str],
+) -> bool:
+    """
+    Immediately quarantine a provider if the error indicates an auth/config issue.
+    
+    Returns True if the provider was quarantined, False otherwise.
+    
+    Auth failures (401, 403) indicate a permanent config issue that won't recover
+    with retries, so we quarantine immediately rather than waiting for health score decay.
+    """
+    if error_code not in _IMMEDIATE_QUARANTINE_ERROR_CODES:
+        return False
+    
+    now = utc_now_iso()
+    reason = f"immediate quarantine on auth failure: {error_code}"
+    
+    # Check if already quarantined
+    existing = execute_sql_one(
+        db,
+        "SELECT quarantined FROM provider_health WHERE provider = :p AND provider_model = :m",
+        {"p": provider, "m": provider_model},
+    )
+    
+    if existing and existing.get("quarantined"):
+        return False  # Already quarantined
+    
+    # Immediate quarantine
+    execute_sql(
+        db,
+        "UPDATE provider_health SET quarantined = 1, quarantine_reason = :r, "
+        "quarantined_at = :at, consecutive_low_health_count = 0 "
+        "WHERE provider = :p AND provider_model = :m",
+        {"r": reason, "at": now, "p": provider, "m": provider_model},
+    )
+    
+    # Audit log
+    execute_sql(
+        db,
+        "INSERT INTO provider_quarantine_events "
+        "(provider, provider_model, event_type, reason, health_score, consecutive_low_health_count, created_at) "
+        "VALUES (:p, :m, 'immediate_quarantine', :r, 0.0, 0, :at)",
+        {"p": provider, "m": provider_model, "r": reason, "at": now},
+    )
+    
+    logger.warning(
+        f"immediately quarantined ({provider}, {provider_model}): {reason}",
+        event_type="provider.immediate_quarantine",
+    )
+    return True

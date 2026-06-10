@@ -17,7 +17,7 @@ from fusion_council_service.domain.event_emitter import (
     emit_candidate_completed, emit_candidate_failed, emit_fallback_promoted,
     emit_heartbeat, emit_run_completed, emit_run_failed, emit_run_started, emit_run_succeeded_degraded, emit_stage_started,
 )
-from fusion_council_service.domain.model_selection import select_healthy_stage_model, update_health_for_candidate
+from fusion_council_service.domain.model_selection import select_healthy_stage_model, update_health_for_candidate, quarantine_on_auth_failure
 from fusion_council_service.domain.orchestration import (
     LangGraphEngine,
     LegacyEngine,
@@ -757,15 +757,19 @@ class Worker:
             pending_calls.append((model, request))
 
         # Execute in parallel with semaphore to cap concurrency
+        # Use as_completed to emit events as each candidate finishes (not after all complete)
         sem = asyncio.Semaphore(3)
+        
         async def call_with_sem(model, req):
             async with sem:
-                return model, await self._call_provider_async(req, db, run_id)
-
-        results = await asyncio.gather(*[call_with_sem(m, r) for m, r in pending_calls])
-
-        for (model, request), result in zip(pending_calls, results):
-            _m, provider_result = result
+                result = await self._call_provider_async(req, db, run_id)
+                return model, result
+        
+        # Create tasks but don't await all at once - process as they complete
+        tasks = [asyncio.create_task(call_with_sem(m, r)) for m, r in pending_calls]
+        
+        for task in asyncio.as_completed(tasks):
+            model, provider_result = await task
             success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
             if success:
@@ -776,6 +780,7 @@ class Worker:
                 )
                 update_candidate_result(db, cand_id, "succeeded", normalized_answer=raw_text,
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
+                # Emit event IMMEDIATELY when this candidate finishes - don't wait for siblings
                 emit_candidate_completed(db, run_id, cand_id, model["alias"], "generation")
                 gen_candidates.append(get_candidate(db, cand_id) or {})
             else:
@@ -784,7 +789,10 @@ class Worker:
                 update_health_for_candidate(
                     db, model["provider"], model["provider_model"], False, float(lat_ms) if lat_ms else None,
                 )
+                # Immediate quarantine on auth failures - don't retry a broken config
+                quarantine_on_auth_failure(db, model["provider"], model["provider_model"], str(err_code) if err_code else None)
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
+                # Emit event IMMEDIATELY when this candidate fails - don't wait for siblings
                 emit_candidate_failed(db, run_id, cand_id, model["alias"], "generation", err_msg or err_code)
 
         succeeded = [c for c in gen_candidates if c.get("status") == "succeeded"]
