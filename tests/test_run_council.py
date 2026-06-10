@@ -202,4 +202,5 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
 
     run_after = get_run(tmp_db, run_id)
     assert run_after["status"] == "succeeded"
-    assert run_after["current_stage"] == "completed"
+    # update_run_status sets current_stage to "complete" for succeeded runs
+    assert run_after["current_stage"] == "complete"
