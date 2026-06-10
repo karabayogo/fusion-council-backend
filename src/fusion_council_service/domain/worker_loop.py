@@ -356,17 +356,15 @@ class Worker:
                                    reason: str, best_text: str, confidence: float = 0.5) -> None:
         """Finalize a run as succeeded_degraded due to deadline pressure."""
         logger.info(f"Finalizing as succeeded_degraded: {reason}", run_id=run_id)
-        now = utc_now_iso()
-        execute_sql(
+        update_run_status(
             db,
-            "UPDATE runs SET status='succeeded_degraded', finished_at=:now, final_answer=:final_answer, "
-            "final_confidence=:confidence, degraded_reason=:reason WHERE run_id=:run_id",
-            {"now": now, "final_answer": best_text, "confidence": confidence, "reason": reason, "run_id": run_id},
+            run_id,
+            "succeeded_degraded",
+            final_answer=best_text,
+            final_confidence=confidence,
+            degraded_reason=reason,
         )
-        commit_tx(db)
         emit_run_succeeded_degraded(db, run_id, best_text, reason, confidence=confidence)
-        update_run_status(db, run_id, "succeeded_degraded", final_answer=best_text,
-                          final_confidence=confidence, degraded_reason=reason)
 
     def _attempted_model_identities(self, db: object, run_id: str) -> tuple[set[str], set[tuple[str, str]]]:
         """Return aliases and upstream provider/model pairs already attempted for a run."""
@@ -696,15 +694,9 @@ class Worker:
             emit_candidate_completed(db, run_id, candidate_id, model["alias"], "generation")
 
             # Emit completion
-            execute_sql(
-                db,
-                "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer WHERE run_id=:run_id",
-                {"now": utc_now_iso(), "final_answer": raw_text, "run_id": run_id},
-            )
-            commit_tx(db)
+            update_run_status(db, run_id, "succeeded", final_answer=raw_text)
             emit_run_completed(db, run_id, raw_text)
             _safe_log_pending_decision(db, run, "single", raw_text)
-            update_run_status(db, run_id, "succeeded")
         else:
             insert_candidate(db, run_id, candidate_id, model["alias"], model["provider"],
                              model["provider_model"], "generation", "failed", utc_now_iso())
@@ -728,15 +720,9 @@ class Worker:
                     update_candidate_result(db, fb_candidate_id, "succeeded", normalized_answer=fb_txt,
                                             latency_ms=fb_lat, input_tokens=fb_in, output_tokens=fb_out)
                     emit_candidate_completed(db, run_id, fb_candidate_id, fallback["alias"], "generation")
-                    execute_sql(
-                        db,
-                        "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer WHERE run_id=:run_id",
-                        {"now": utc_now_iso(), "final_answer": fb_txt, "run_id": run_id},
-                    )
-                    commit_tx(db)
+                    update_run_status(db, run_id, "succeeded", final_answer=fb_txt)
                     emit_run_completed(db, run_id, fb_txt)
                     _safe_log_pending_decision(db, run, "single", fb_txt)
-                    update_run_status(db, run_id, "succeeded")
                     return
             await self._fail_run(db, run_id, err_code or "PROVIDER_FAILED", err_msg or "Single model failed")
 
@@ -841,11 +827,8 @@ class Worker:
 
         if len(succeeded) < 2:
             # Quorum not met even after fallbacks
-            execute_sql(db, "UPDATE runs SET status='failed', error_code='FUSION_QUORUM_NOT_MET', finished_at=:now WHERE run_id=:run_id",
-                        {"now": utc_now_iso(), "run_id": run_id})
-            commit_tx(db)
-            emit_run_failed(db, run_id, "FUSION_QUORUM_NOT_MET", f"Only {len(succeeded)}/3 models succeeded")
             update_run_status(db, run_id, "failed", error_code="FUSION_QUORUM_NOT_MET")
+            emit_run_failed(db, run_id, "FUSION_QUORUM_NOT_MET", f"Only {len(succeeded)}/3 models succeeded")
             return
 
         # Stage 2: synthesis
@@ -934,12 +917,15 @@ class Worker:
                 run_id=run_id,
             )
 
-        execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
-                    {"now": utc_now_iso(), "final_answer": final_answer, "confidence": confidence, "run_id": run_id})
-        commit_tx(db)
+        update_run_status(
+            db,
+            run_id,
+            "succeeded",
+            final_answer=final_answer,
+            final_confidence=confidence,
+        )
         emit_run_completed(db, run_id, final_answer, confidence=confidence)
         _safe_log_pending_decision(db, run, "fusion", final_answer)
-        update_run_status(db, run_id, "succeeded", final_answer=final_answer, final_confidence=confidence)
 
     async def _run_council(self, db: object, run: dict) -> None:
         """Execute a council-mode run."""
@@ -1037,11 +1023,8 @@ class Worker:
                         break
 
         if len(succeeded_opinions) < 2:
-            execute_sql(db, "UPDATE runs SET status='failed', error_code='COUNCIL_QUORUM_NOT_MET', finished_at=:now WHERE run_id=:run_id",
-                        {"now": utc_now_iso(), "run_id": run_id})
-            commit_tx(db)
-            emit_run_failed(db, run_id, "COUNCIL_QUORUM_NOT_MET", f"Only {len(succeeded_opinions)}/3 opinions succeeded")
             update_run_status(db, run_id, "failed", error_code="COUNCIL_QUORUM_NOT_MET")
+            emit_run_failed(db, run_id, "COUNCIL_QUORUM_NOT_MET", f"Only {len(succeeded_opinions)}/3 opinions succeeded")
             return
 
         # Deadline check — skip peer review if under heavy pressure
@@ -1226,11 +1209,6 @@ class Worker:
                     run_id=run_id,
                 )
 
-        execute_sql(db, "UPDATE runs SET status='succeeded', finished_at=:now, final_answer=:final_answer, final_confidence=:confidence WHERE run_id=:run_id",
-                    {"now": utc_now_iso(), "final_answer": synthesis_text, "confidence": confidence, "run_id": run_id})
-        commit_tx(db)
-        emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
-        _safe_log_pending_decision(db, run, "council", synthesis_text)
         terminal_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'succeeded'", {"run_id": run_id}))
         failed_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'failed'", {"run_id": run_id}))
         update_run_status(
@@ -1239,19 +1217,15 @@ class Worker:
             "succeeded",
             final_answer=synthesis_text,
             final_confidence=confidence,
-            current_stage="completed",
-            current_stage_message="Run completed",
-            progress_percent=100.0,
             models_completed=terminal_count,
             models_failed=failed_count,
         )
+        emit_run_completed(db, run_id, synthesis_text, confidence=confidence)
+        _safe_log_pending_decision(db, run, "council", synthesis_text)
 
     async def _fail_run(self, db: object, run_id: str, error_code: str, error_message: str) -> None:
-        execute_sql(db, "UPDATE runs SET status='failed', error_code=:error_code, error_message=:error_message, finished_at=:now WHERE run_id=:run_id",
-                    {"error_code": error_code, "error_message": error_message, "now": utc_now_iso(), "run_id": run_id})
-        commit_tx(db)
-        emit_run_failed(db, run_id, error_code, error_message)
         update_run_status(db, run_id, "failed", error_code=error_code, error_message=error_message)
+        emit_run_failed(db, run_id, error_code, error_message)
 
     async def _execute_run(self, run: dict) -> None:
         """Main entry point for executing a single run."""

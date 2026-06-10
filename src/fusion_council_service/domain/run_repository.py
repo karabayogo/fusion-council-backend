@@ -3,6 +3,7 @@
 from typing import Optional
 
 from fusion_council_service import metrics as app_metrics
+from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import (
     begin_immediate,
     commit_tx,
@@ -67,6 +68,27 @@ def get_run(db, run_id: str) -> Optional[dict]:
 
 
 def update_run_status(db, run_id: str, status: str, **kwargs) -> None:
+    terminal_stage_by_status = {
+        "succeeded": "complete",
+        "succeeded_degraded": "complete",
+        "failed": "failed",
+        "cancelled": "cancelled",
+    }
+    terminal_message_by_status = {
+        "succeeded": "Run completed",
+        "succeeded_degraded": "Run completed with degradation",
+        "failed": kwargs.get("error_message") or "Run failed",
+        "cancelled": "Run cancelled",
+    }
+    if status in terminal_stage_by_status:
+        kwargs = dict(kwargs)
+        if not kwargs.get("finished_at"):
+            kwargs["finished_at"] = utc_now_iso()
+        kwargs.setdefault("progress_percent", 100.0)
+        kwargs.setdefault("current_stage", terminal_stage_by_status[status])
+        if kwargs.get("current_stage_message") in {None, ""}:
+            kwargs["current_stage_message"] = terminal_message_by_status[status]
+
     fields = ["status"] + list(kwargs.keys())
     values = {"status": status, **kwargs, "run_id": run_id}
     set_clause = ", ".join(f"{f} = :{f}" for f in fields)

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # --- Provider dataclasses ---
@@ -16,7 +16,7 @@ class ProviderGenerateRequest:
     provider_model: str       # provider-specific model name like "glm-5.1"
     system_prompt: Optional[str]
     user_prompt: str
-    max_output_tokens: int    # default 3000
+    max_output_tokens: int    # default 30000
     temperature: float        # default 0.2
     # Optional structured-output hints. Providers that don't support them can ignore.
     json_schema: Optional[dict] = None
@@ -64,7 +64,7 @@ class RunRequest(BaseModel):
     system_prompt: Optional[str] = None
     requested_models: Optional[List[str]] = None
     temperature: float = 0.2
-    max_output_tokens: int = 3000
+    max_output_tokens: int = Field(default=30000, ge=1, le=30000)
     deadline_seconds: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
 
@@ -84,7 +84,7 @@ class RespondRequest(BaseModel):
     system_prompt: Optional[str] = None
     requested_models: Optional[List[str]] = None
     temperature: float = 0.2
-    max_output_tokens: int = 3000
+    max_output_tokens: int = Field(default=30000, ge=1, le=30000)
     deadline_seconds: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
     wait_timeout_seconds: Optional[int] = None

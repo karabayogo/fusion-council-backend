@@ -40,7 +40,7 @@ def tmp_db() -> Generator[sqlite3.Connection, None, None]:
     """Create a temporary in-memory SQLite DB with schema."""
     from fusion_council_service.db import initialize_schema
 
-    db = sqlite3.connect(":memory:", timeout=5)
+    db = sqlite3.connect(":memory:", timeout=5, check_same_thread=False)
     db.row_factory = sqlite3.Row
     # WAL mode requires a file on disk — skip for in-memory
     db.execute("PRAGMA foreign_keys=ON")

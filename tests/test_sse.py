@@ -12,6 +12,7 @@ from fusion_council_service.domain.event_emitter import (
     emit_heartbeat,
 )
 from fusion_council_service.domain.event_repository import (
+    append_event,
     list_events_for_run,
     get_next_seq,
 )
@@ -81,6 +82,23 @@ def test_events_ordered_by_seq(tmp_db, run_with_events):
     ev2 = emit_stage_started(tmp_db, run_with_events, "generation", [])
     assert ev2["seq"] == seq2
     assert ev2["seq"] > ev1["seq"]
+
+
+def test_append_event_returns_envelope_and_persists_payload(tmp_db, run_with_events):
+    ev = append_event(
+        tmp_db,
+        run_with_events,
+        "custom.event",
+        {"message": "hello", "count": 2},
+    )
+
+    assert ev["event_type"] == "custom.event"
+    assert ev["run_id"] == run_with_events
+    assert ev["seq"] == 1
+    assert ev["payload"]["message"] == "hello"
+
+    rows = list_events_for_run(tmp_db, run_with_events, after_seq=0)
+    assert rows[0]["event_type"] == "custom.event"
 
 
 def test_list_events_for_run_with_after_seq(tmp_db, run_with_events):

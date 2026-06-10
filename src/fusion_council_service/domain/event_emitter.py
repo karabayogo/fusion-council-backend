@@ -1,20 +1,15 @@
 """Event emitter — helpers for emitting SSE events during run execution."""
 
-import json
-
 from fusion_council_service.clock import utc_now_iso
-from fusion_council_service.domain.event_repository import append_event, get_next_seq
+from fusion_council_service.domain.event_repository import append_event
 from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.event_emitter")
 
 
 def emit_event(db, run_id: str, event_type: str, payload: dict) -> dict:
-    """Emit a run event to the database. Returns the event dict."""
-    seq = get_next_seq(db, run_id)
-    created_at = utc_now_iso()
-    payload_json = json.dumps(payload, ensure_ascii=False)
-    result = append_event(db, run_id, event_type, payload_json, seq, created_at)
+    """Emit a run event to the database. Returns the event envelope."""
+    result = append_event(db, run_id, event_type, payload, created_at=utc_now_iso())
     logger.info(f"Event emitted: {event_type}", run_id=run_id, event_type=event_type)
     return result
 

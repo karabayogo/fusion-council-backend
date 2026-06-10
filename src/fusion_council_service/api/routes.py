@@ -17,7 +17,10 @@ from fusion_council_service.domain.budget import resolve_deadline, select_models
 from fusion_council_service.domain.candidate_repository import list_candidates_for_run
 from fusion_council_service.domain.decision_log import resolve_decision_outcome, rotate_decision_log
 from fusion_council_service.domain.event_emitter import emit_run_accepted
-from fusion_council_service.domain.event_repository import list_events_for_run
+from fusion_council_service.domain.event_repository import (
+    list_event_envelopes_for_run,
+    list_events_for_run,
+)
 from fusion_council_service.domain.model_selection import (
     get_health_scores, get_health_latencies,
 )
@@ -422,9 +425,36 @@ async def get_run_status(
     }
 
 
+@router.get("/v1/runs/{run_id}/events/history")
+async def list_run_event_history(
+    run_id: str,
+    auth=Depends(get_auth_dependency()),
+):
+    """Return the full persisted event history for a run in replay-friendly envelope form."""
+    token, role = auth
+    db = get_api_db()
+
+    run = get_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    events = list_event_envelopes_for_run(db, run_id)
+    response = JSONResponse(
+        {
+            "run_id": run_id,
+            "events": events,
+            "count": len(events),
+            "last_seq": events[-1]["seq"] if events else 0,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/v1/runs/{run_id}/events")
 async def stream_run_events(
     run_id: str,
+    after_seq: int = Query(default=0, ge=0),
     auth=Depends(get_auth_dependency()),
 ):
     """SSE stream of run events."""
@@ -435,25 +465,31 @@ async def stream_run_events(
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
+    terminal_statuses = {"succeeded", "succeeded_degraded", "failed", "cancelled"}
+    terminal_events = {"run.completed", "run.failed", "run.cancelled", "run.succeeded_degraded"}
+
     async def event_stream():
-        seen = 0
+        seen = after_seq
         poll_interval = _settings.SSE_POLL_INTERVAL_MS / 1000.0 if _settings else 0.5
 
         while True:
-            events = list_events_for_run(db, run_id, after_seq=seen)
-            for event in events:
-                seen = max(seen, event["seq"] + 1)
-                payload = json.loads(event["payload_json"]) if event["payload_json"] else {}
-                yield f"event: {event['event_type']}\ndata: {json.dumps(payload)}\n\n".encode()
+            events = list_event_envelopes_for_run(db, run_id, after_seq=seen)
+            if events:
+                terminal_seen = False
+                for event in events:
+                    seen = max(seen, int(event["seq"]))
+                    yield f"event: {event['event_type']}\ndata: {json.dumps(event)}\n\n".encode()
+                    if event["event_type"] in terminal_events:
+                        terminal_seen = True
 
-            # Check if run is terminal
-            if seen > 0:
-                # Get latest event
-                latest_events = list_events_for_run(db, run_id, after_seq=seen - 2)
-                for ev in latest_events:
-                    if ev["event_type"] in ("run.completed", "run.failed", "run.cancelled"):
-                        yield "event: END\ndata: {\"done\": true}\n\n".encode()
-                        return
+                if terminal_seen:
+                    yield "event: END\ndata: {\"done\": true}\n\n".encode()
+                    return
+            else:
+                latest_run = get_run(db, run_id)
+                if latest_run and latest_run["status"] in terminal_statuses:
+                    yield "event: END\ndata: {\"done\": true}\n\n".encode()
+                    return
 
             await asyncio.sleep(poll_interval)
 
