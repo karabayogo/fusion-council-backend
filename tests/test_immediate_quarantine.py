@@ -120,9 +120,11 @@ def test_quarantine_on_http_403(db_with_schema):
 
 @pytest.fixture
 def db_with_schema():
-    """In-memory DB with schema for testing."""
+    """In-memory DB with schema for testing using raw sqlite3."""
     import sqlite3
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    
     conn.execute("""
         CREATE TABLE IF NOT EXISTS provider_health (
             id INTEGER PRIMARY KEY,
@@ -143,6 +145,7 @@ def db_with_schema():
             UNIQUE(provider, provider_model)
         )
     """)
+    
     conn.execute("""
         CREATE TABLE IF NOT EXISTS provider_quarantine_events (
             id INTEGER PRIMARY KEY,
@@ -155,6 +158,7 @@ def db_with_schema():
             created_at TEXT NOT NULL
         )
     """)
+    
     conn.commit()
     yield conn
     conn.close()

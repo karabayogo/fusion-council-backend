@@ -134,6 +134,10 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: 
     """Build orchestration-stage summaries without creating fake candidate rows."""
     by_stage: dict[str, dict] = {}
 
+    # Skip terminal "complete" stage - it's set by update_run_status but isn't a real stage
+    # This prevents duplicate "complete" entries in the stages list
+    TERMINAL_STAGES = {"complete", "failed", "cancelled"}
+
     def append_model(summary: dict, alias: str | None) -> None:
         if not alias:
             return
@@ -179,7 +183,9 @@ def _stage_summaries(run: dict, candidates: list[dict], events: list[dict], db: 
 
     current_stage = run.get("current_stage")
     degraded_reason = run.get("degraded_reason")
-    if current_stage:
+    
+    # Skip terminal stages - they're not real orchestration stages
+    if current_stage and current_stage not in TERMINAL_STAGES:
         summary = by_stage.setdefault(current_stage, {
             "stage": current_stage,
             "candidate_count": 0,
