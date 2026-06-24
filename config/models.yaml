@@ -1,54 +1,54 @@
 models:
   - alias: primary-researcher
-    provider: ollama_cloud
-    provider_model: deepseek-v4-pro:cloud
+    provider: minimax_token_plan
+    provider_model: MiniMax-M3
     enabled: true
-    family: deepseek
+    family: minimax
     tier: frontier
     role_bias: primary
     timeout_seconds: 600
 
   - alias: reviewer
-    provider: ollama_cloud
-    provider_model: kimi-k2.7-code:cloud
+    provider: minimax_token_plan
+    provider_model: MiniMax-M2.7
     enabled: true
-    family: kimi
+    family: minimax
     tier: frontier
     role_bias: reviewer
     timeout_seconds: 600
 
-  - alias: backup
-    provider: openai_codex
-    provider_model: gpt-5.4
-    enabled: true
-    family: gpt
-    tier: frontier
-    role_bias: backup
-    timeout_seconds: 600
-
-  - alias: synthesizer
-    provider: ollama_cloud
-    provider_model: glm-5.2:cloud
-    enabled: true
-    family: glm
-    tier: frontier
-    role_bias: synthesis
-    timeout_seconds: 600
-
   - alias: creative
     provider: minimax_token_plan
-    provider_model: MiniMax-M3
+    provider_model: MiniMax-M4
     enabled: true
     family: minimax
     tier: frontier
     role_bias: creative
     timeout_seconds: 600
 
-  - alias: verifier
-    provider: openai_codex
-    provider_model: gpt-5.4
+  - alias: backup
+    provider: minimax_token_plan
+    provider_model: MiniMax-Text-01
     enabled: true
-    family: gpt
+    family: minimax
+    tier: frontier
+    role_bias: backup
+    timeout_seconds: 600
+
+  - alias: synthesizer
+    provider: minimax_token_plan
+    provider_model: MiniMax-M3
+    enabled: true
+    family: minimax
+    tier: frontier
+    role_bias: synthesis
+    timeout_seconds: 600
+
+  - alias: verifier
+    provider: minimax_token_plan
+    provider_model: MiniMax-M4
+    enabled: true
+    family: minimax
     tier: frontier
     role_bias: verification
     timeout_seconds: 600
