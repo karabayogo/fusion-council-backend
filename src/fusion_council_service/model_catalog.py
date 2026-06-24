@@ -178,29 +178,48 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
     """
     models = load_yaml_catalog(settings.MODEL_CATALOG_PATH)
 
+    import os as _os
+    _skip_validation = _os.environ.get("SKIP_PROVIDER_VALIDATION", "").strip() in ("1", "true", "yes")
+
     # Validate MiniMax only if any minimax models are configured
     minimax_models = [m for m in models if m["provider"] == "minimax_token_plan" and m.get("enabled", True)]
     if minimax_models:
         if not settings.minimax_api_key_effective:
-            raise RuntimeError("MINIMAX_API_KEY is required when provider minimax_token_plan is configured")
-        enabled_minimax_provider_models = [m["provider_model"] for m in minimax_models]
-        validate_minimax(
-            settings.minimax_api_key_effective,
-            settings.MINIMAX_ANTHROPIC_BASE_URL,
-            enabled_minimax_provider_models,
-        )
+            if _skip_validation:
+                logger.warning(
+                    "MINIMAX_API_KEY not set but SKIP_PROVIDER_VALIDATION=1 — "
+                    "provider will fail at runtime if models are called",
+                    event_type="model.validation_skipped_no_key",
+                )
+            else:
+                raise RuntimeError("MINIMAX_API_KEY is required when provider minimax_token_plan is configured")
+        else:
+            enabled_minimax_provider_models = [m["provider_model"] for m in minimax_models]
+            validate_minimax(
+                settings.minimax_api_key_effective,
+                settings.MINIMAX_ANTHROPIC_BASE_URL,
+                enabled_minimax_provider_models,
+            )
 
     # Validate Ollama only if any ollama models are configured
     ollama_models = [m for m in models if m["provider"] == "ollama_cloud"]
     ollama_provider_models = [m["provider_model"] for m in ollama_models]
     if ollama_provider_models:
         if not settings.OLLAMA_API_KEY:
-            raise RuntimeError("OLLAMA_API_KEY is required when provider ollama_cloud is configured")
-        ollama_errors = validate_ollama_models(settings.OLLAMA_API_KEY, settings.OLLAMA_BASE_URL, ollama_provider_models)
-        if ollama_errors:
-            for model_name, error in ollama_errors.items():
-                logger.error(f"Ollama model validation failed: {error}")
-            raise RuntimeError(f"Ollama model validation failed: {list(ollama_errors.values())}")
+            if _skip_validation:
+                logger.warning(
+                    "OLLAMA_API_KEY not set but SKIP_PROVIDER_VALIDATION=1 — "
+                    "provider will fail at runtime if models are called",
+                    event_type="model.validation_skipped_no_key",
+                )
+            else:
+                raise RuntimeError("OLLAMA_API_KEY is required when provider ollama_cloud is configured")
+        else:
+            ollama_errors = validate_ollama_models(settings.OLLAMA_API_KEY, settings.OLLAMA_BASE_URL, ollama_provider_models)
+            if ollama_errors:
+                for model_name, error in ollama_errors.items():
+                    logger.error(f"Ollama model validation failed: {error}")
+                raise RuntimeError(f"Ollama model validation failed: {list(ollama_errors.values())}")
 
     # Validate OpenAI Codex-compatible only if configured and enabled
     openai_codex_models = [
@@ -210,17 +229,25 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
     ]
     if openai_codex_models:
         if not settings.OPENAI_CODEX_API_KEY:
-            raise RuntimeError("OPENAI_CODEX_API_KEY is required when provider openai_codex is configured")
-        openai_codex_errors = validate_openai_compatible_models(
-            settings.OPENAI_CODEX_API_KEY,
-            settings.OPENAI_CODEX_BASE_URL,
-            openai_codex_models,
-            "OpenAI Codex",
-        )
-        if openai_codex_errors:
-            for model_name, error in openai_codex_errors.items():
-                logger.error(f"OpenAI Codex model validation failed: {error}")
-            raise RuntimeError(f"OpenAI Codex model validation failed: {list(openai_codex_errors.values())}")
+            if _skip_validation:
+                logger.warning(
+                    "OPENAI_CODEX_API_KEY not set but SKIP_PROVIDER_VALIDATION=1 — "
+                    "provider will fail at runtime if models are called",
+                    event_type="model.validation_skipped_no_key",
+                )
+            else:
+                raise RuntimeError("OPENAI_CODEX_API_KEY is required when provider openai_codex is configured")
+        else:
+            openai_codex_errors = validate_openai_compatible_models(
+                settings.OPENAI_CODEX_API_KEY,
+                settings.OPENAI_CODEX_BASE_URL,
+                openai_codex_models,
+                "OpenAI Codex",
+            )
+            if openai_codex_errors:
+                for model_name, error in openai_codex_errors.items():
+                    logger.error(f"OpenAI Codex model validation failed: {error}")
+                raise RuntimeError(f"OpenAI Codex model validation failed: {list(openai_codex_errors.values())}")
 
     # Validate OpenCode-Go-compatible only if configured and enabled
     opencode_go_models = [
@@ -230,17 +257,25 @@ def load_and_validate_catalog(settings, db: Optional[sqlite3.Connection] = None)
     ]
     if opencode_go_models:
         if not settings.OPENCODE_GO_API_KEY:
-            raise RuntimeError("OPENCODE_GO_API_KEY is required when provider opencode_go is configured")
-        opencode_go_errors = validate_openai_compatible_models(
-            settings.OPENCODE_GO_API_KEY,
-            settings.OPENCODE_GO_BASE_URL,
-            opencode_go_models,
-            "OpenCode-Go",
-        )
-        if opencode_go_errors:
-            for model_name, error in opencode_go_errors.items():
-                logger.error(f"OpenCode-Go model validation failed: {error}")
-            raise RuntimeError(f"OpenCode-Go model validation failed: {list(opencode_go_errors.values())}")
+            if _skip_validation:
+                logger.warning(
+                    "OPENCODE_GO_API_KEY not set but SKIP_PROVIDER_VALIDATION=1 — "
+                    "provider will fail at runtime if models are called",
+                    event_type="model.validation_skipped_no_key",
+                )
+            else:
+                raise RuntimeError("OPENCODE_GO_API_KEY is required when provider opencode_go is configured")
+        else:
+            opencode_go_errors = validate_openai_compatible_models(
+                settings.OPENCODE_GO_API_KEY,
+                settings.OPENCODE_GO_BASE_URL,
+                opencode_go_models,
+                "OpenCode-Go",
+            )
+            if opencode_go_errors:
+                for model_name, error in opencode_go_errors.items():
+                    logger.error(f"OpenCode-Go model validation failed: {error}")
+                raise RuntimeError(f"OpenCode-Go model validation failed: {list(opencode_go_errors.values())}")
 
     # Persist to DB
     if db is not None:
