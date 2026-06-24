@@ -1,27 +1,36 @@
 models:
   - alias: primary-researcher
-    provider: ollama_cloud
-    provider_model: qwen2.5:0.5b
+    provider: minimax_token_plan
+    provider_model: MiniMax-M3
     enabled: true
-    family: qwen
+    family: minimax
     tier: frontier
     role_bias: primary
     timeout_seconds: 600
 
   - alias: reviewer
     provider: minimax_token_plan
-    provider_model: MiniMax-M3
+    provider_model: MiniMax-M2.7
     enabled: true
     family: minimax
     tier: frontier
     role_bias: reviewer
     timeout_seconds: 600
 
-  - alias: backup
-    provider: ollama_cloud
-    provider_model: qwen2.5:0.5b
+  - alias: creative
+    provider: minimax_token_plan
+    provider_model: MiniMax-M4
     enabled: true
-    family: qwen
+    family: minimax
+    tier: frontier
+    role_bias: creative
+    timeout_seconds: 600
+
+  - alias: backup
+    provider: minimax_token_plan
+    provider_model: MiniMax-Text-01
+    enabled: true
+    family: minimax
     tier: frontier
     role_bias: backup
     timeout_seconds: 600
@@ -35,18 +44,9 @@ models:
     role_bias: synthesis
     timeout_seconds: 600
 
-  - alias: creative
-    provider: ollama_cloud
-    provider_model: qwen2.5:0.5b
-    enabled: true
-    family: qwen
-    tier: frontier
-    role_bias: creative
-    timeout_seconds: 600
-
   - alias: verifier
     provider: minimax_token_plan
-    provider_model: MiniMax-M3
+    provider_model: MiniMax-M4
     enabled: true
     family: minimax
     tier: frontier
