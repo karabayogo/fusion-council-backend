@@ -1,52 +1,36 @@
 models:
-  # - alias: openai-codex/gpt-5.3-codex
-  #   provider: openai_codex
-  #   provider_model: gpt-5.3-codex
-  #   enabled: false
-  #   family: gpt
-  #   tier: frontier
-  #   role_bias: primary
-
-  # - alias: openai-codex/gpt-5.4
-  #   provider: openai_codex
-  #   provider_model: gpt-5.4
-  #   enabled: false
-  #   family: gpt
-  #   tier: frontier
-  #   role_bias: reviewer
-
   - alias: primary-researcher
-    provider: opencode_go
-    provider_model: qwen3.7-max
+    provider: ollama_cloud
+    provider_model: deepseek-v4-pro:cloud
     enabled: true
-    family: qwen
+    family: deepseek
     tier: frontier
     role_bias: primary
     timeout_seconds: 600
 
   - alias: reviewer
-    provider: opencode_go
-    provider_model: kimi-k2.6
+    provider: ollama_cloud
+    provider_model: kimi-k2.7-code:cloud
     enabled: true
     family: kimi
     tier: frontier
     role_bias: reviewer
-    timeout_seconds: 600 
+    timeout_seconds: 600
 
   - alias: backup
-    provider: opencode_go
-    provider_model: qwen3.6-plus
+    provider: openai_codex
+    provider_model: gpt-5.4
     enabled: true
-    family: qwen
+    family: gpt
     tier: frontier
     role_bias: backup
     timeout_seconds: 600
 
   - alias: synthesizer
-    provider: opencode_go
-    provider_model: deepseek-v4-pro
+    provider: ollama_cloud
+    provider_model: glm-5.2:cloud
     enabled: true
-    family: deepseek
+    family: glm
     tier: frontier
     role_bias: synthesis
     timeout_seconds: 600
@@ -61,10 +45,10 @@ models:
     timeout_seconds: 600
 
   - alias: verifier
-    provider: opencode_go
-    provider_model: glm-5.1
+    provider: openai_codex
+    provider_model: gpt-5.4
     enabled: true
-    family: glm
+    family: gpt
     tier: frontier
     role_bias: verification
     timeout_seconds: 600

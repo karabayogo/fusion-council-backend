@@ -1,6 +1,10 @@
 """Regression tests for provider failover and catalog property fixes.
 
-These tests lock in the fixes for run_14898b9d836340a2a6c50bf0:
+These tests load the REAL config/models.yaml catalog and verify provider
+failover behaviour. Provider names are discovered dynamically from the
+catalog so the tests remain valid when the catalog changes.
+
+Original RCA fixes:
 - RCA-1: Missing @property catalog on Worker class (LangGraph crash)
 - RCA-3: _try_fallback doesn't skip failed providers (burns deadline budget)
 """
@@ -42,6 +46,16 @@ def worker_with_catalog(real_catalog):
     # Initialize the in-memory DB
     worker._db = worker._get_db()
     return worker
+
+
+def _providers_with_model_counts(catalog) -> list[tuple[str, int]]:
+    """Return [(provider_name, model_count), ...] sorted by count descending."""
+    counts: dict[str, int] = {}
+    for m in catalog.enabled_models():
+        p = m.get("provider", "")
+        if p:
+            counts[p] = counts.get(p, 0) + 1
+    return sorted(counts.items(), key=lambda x: x[1], reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -97,24 +111,33 @@ def _ensure_run_exists(db, run_id):
         pass  # run may already exist
 
 
-def test_failed_providers_detects_fully_down_provider(worker_with_catalog):
-    """When ALL models from a provider fail, that provider is detected."""
-    db = worker_with_catalog._db
-    run_id = "test_failed_provider"
-    _ensure_run_exists(db, run_id)
-
-    # Insert failed candidates for ALL opencode_go models
-    catalog = worker_with_catalog.catalog
+def _fail_all_models_for_provider(db, run_id, catalog, provider_name):
+    """Insert failed candidates for ALL enabled models from a provider."""
     for model in catalog.enabled_models():
-        if model.get("provider") == "opencode_go":
+        if model.get("provider") == provider_name:
             insert_candidate(
                 db, run_id, f"cand_{model['alias']}", model["alias"],
                 model["provider"], model["provider_model"],
                 "first_opinion", "failed", utc_now_iso(),
             )
 
+
+def test_failed_providers_detects_fully_down_provider(worker_with_catalog):
+    """When ALL models from a provider fail, that provider is detected."""
+    db = worker_with_catalog._db
+    run_id = "test_failed_provider"
+    _ensure_run_exists(db, run_id)
+
+    # Pick the provider with the most models (guaranteed to have at least one)
+    catalog = worker_with_catalog.catalog
+    providers = _providers_with_model_counts(catalog)
+    assert providers, "Catalog must have at least one provider"
+    target_provider = providers[0][0]
+
+    _fail_all_models_for_provider(db, run_id, catalog, target_provider)
+
     failed = worker_with_catalog._failed_providers(db, run_id)
-    assert "opencode_go" in failed
+    assert target_provider in failed
 
 
 def test_failed_providers_ignores_partial_provider_failure(worker_with_catalog):
@@ -123,13 +146,16 @@ def test_failed_providers_ignores_partial_provider_failure(worker_with_catalog):
     run_id = "test_partial_failure"
     _ensure_run_exists(db, run_id)
 
-    # Only fail ONE opencode_go model, not all
+    # Find a provider with >1 model
     catalog = worker_with_catalog.catalog
-    opencode_models = [m for m in catalog.enabled_models() if m.get("provider") == "opencode_go"]
-    assert len(opencode_models) > 1, "Need multiple opencode_go models for this test"
+    providers = _providers_with_model_counts(catalog)
+    multi_model_providers = [(p, c) for p, c in providers if c > 1]
+    assert multi_model_providers, "Need a provider with multiple models for this test"
+    target_provider = multi_model_providers[0][0]
 
-    # Fail only the first one
-    m = opencode_models[0]
+    # Fail only the first model from that provider
+    provider_models = [m for m in catalog.enabled_models() if m.get("provider") == target_provider]
+    m = provider_models[0]
     insert_candidate(
         db, run_id, "cand_partial", m["alias"],
         m["provider"], m["provider_model"],
@@ -137,7 +163,7 @@ def test_failed_providers_ignores_partial_provider_failure(worker_with_catalog):
     )
 
     failed = worker_with_catalog._failed_providers(db, run_id)
-    assert "opencode_go" not in failed
+    assert target_provider not in failed
 
 
 def test_failed_providers_multiple_providers(worker_with_catalog):
@@ -147,27 +173,16 @@ def test_failed_providers_multiple_providers(worker_with_catalog):
     _ensure_run_exists(db, run_id)
 
     catalog = worker_with_catalog.catalog
-    # Fail ALL opencode_go models
-    for model in catalog.enabled_models():
-        if model.get("provider") == "opencode_go":
-            insert_candidate(
-                db, run_id, f"cand_{model['alias']}", model["alias"],
-                model["provider"], model["provider_model"],
-                "first_opinion", "failed", utc_now_iso(),
-            )
+    providers = _providers_with_model_counts(catalog)
+    assert len(providers) >= 2, "Need at least 2 providers for this test"
 
-    # Fail ALL minimax_token_plan models
-    for model in catalog.enabled_models():
-        if model.get("provider") == "minimax_token_plan":
-            insert_candidate(
-                db, run_id, f"cand_{model['alias']}", model["alias"],
-                model["provider"], model["provider_model"],
-                "first_opinion", "failed", utc_now_iso(),
-            )
+    # Fail ALL models from the two largest providers
+    for provider_name, _ in providers[:2]:
+        _fail_all_models_for_provider(db, run_id, catalog, provider_name)
 
     failed = worker_with_catalog._failed_providers(db, run_id)
-    assert "opencode_go" in failed
-    assert "minimax_token_plan" in failed
+    for provider_name, _ in providers[:2]:
+        assert provider_name in failed
 
 
 # ---------------------------------------------------------------------------
@@ -191,24 +206,19 @@ def test_try_fallback_skips_fully_down_provider(worker_with_catalog):
     )
 
     catalog = worker_with_catalog.catalog
-    # Fail ALL opencode_go models
-    for model in catalog.enabled_models():
-        if model.get("provider") == "opencode_go":
-            insert_candidate(
-                db, run_id, f"cand_{model['alias']}", model["alias"],
-                model["provider"], model["provider_model"],
-                "first_opinion", "failed", utc_now_iso(),
-            )
+    # Fail ALL models from the largest provider
+    providers = _providers_with_model_counts(catalog)
+    target_provider = providers[0][0]
+    _fail_all_models_for_provider(db, run_id, catalog, target_provider)
 
-    # Now try fallback — should skip opencode_go models entirely
-    # and only try models from other providers (e.g. minimax)
+    # Now try fallback — should skip the fully-down provider's models entirely
     run = {"mode": "council", "run_id": run_id}
     fallback = worker_with_catalog._try_fallback(db, run, "primary-researcher")
 
     if fallback is not None:
-        # If a fallback was found, it must NOT be from opencode_go
-        assert fallback.get("provider") != "opencode_go", \
-            f"Fallback should skip opencode_go but got {fallback['provider']}"
+        # If a fallback was found, it must NOT be from the failed provider
+        assert fallback.get("provider") != target_provider, \
+            f"Fallback should skip {target_provider} but got {fallback['provider']}"
 
 
 def test_try_fallback_returns_none_when_all_providers_down(worker_with_catalog):
