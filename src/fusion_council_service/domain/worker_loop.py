@@ -430,18 +430,20 @@ class Worker:
             if provider:
                 provider_models.setdefault(provider, []).append(model)
 
-        # Get failed candidates for this run
-        failed_aliases, failed_pairs = self._failed_model_identities(db, run_id)
+        # Get failed candidates for this run.
+        # IMPORTANT: provider-down detection must be alias-based, not
+        # (provider, provider_model)-based. Multiple logical roles may share the
+        # same upstream model identity (for example several aliases all mapped to
+        # MiniMax-M3). Pair-based detection incorrectly marks the whole provider
+        # down after a single alias failure in that scenario.
+        failed_aliases, _failed_pairs = self._failed_model_identities(db, run_id)
         failed_providers: set[str] = set()
 
         for provider, models in provider_models.items():
             if not models:
                 continue
-            # Check if ALL models for this provider have failed
-            all_failed = all(
-                m["alias"] in failed_aliases or (provider, m.get("provider_model", "")) in failed_pairs
-                for m in models
-            )
+            # Check if ALL catalog aliases for this provider have failed.
+            all_failed = all(m["alias"] in failed_aliases for m in models)
             if all_failed:
                 failed_providers.add(provider)
 
