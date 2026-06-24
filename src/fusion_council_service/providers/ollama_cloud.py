@@ -13,7 +13,7 @@ logger = get_logger("fusion_council_service.providers.ollama")
 class OllamaCloudProvider:
     """Calls Ollama cloud /api/chat endpoint using Bearer auth."""
 
-    def __init__(self, api_key: str, base_url: str = "https://ollama.com"):
+    def __init__(self, api_key: str, base_url: str = "http://127.0.0.1:11434"):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
 
