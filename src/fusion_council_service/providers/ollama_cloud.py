@@ -33,14 +33,11 @@ class OllamaCloudProvider:
                 payload["messages"].append({"role": "system", "content": request.system_prompt})
             payload["messages"].append({"role": "user", "content": request.user_prompt})
 
-            headers = {}
-            if self._api_key:
-                headers["Authorization"] = f"Bearer {self._api_key}"
-
+            # No auth header — the in-cluster Ollama server handles cloud auth
+            # internally via its own OLLAMA_API_KEY env var.
             response = httpx.post(
                 f"{self._base_url}/api/chat",
                 json=payload,
-                headers=headers,
                 timeout=300.0,
             )
             latency_ms = int((time.monotonic() - start) * 1000)
