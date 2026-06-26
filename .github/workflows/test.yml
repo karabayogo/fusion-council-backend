@@ -3,8 +3,30 @@ name: Test
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'pyproject.toml.lock'
+      - 'uv.lock'
+      - 'alembic.ini'
+      - 'config/**'
+      - 'migrations/**'
+      - 'scripts/integration_test.py'
+      - 'tests/**'
+      - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'pyproject.toml.lock'
+      - 'uv.lock'
+      - 'alembic.ini'
+      - 'config/**'
+      - 'migrations/**'
+      - 'scripts/integration_test.py'
+      - 'tests/**'
+      - '.github/workflows/test.yml'
 
 jobs:
   test:
