@@ -169,7 +169,16 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
                 output_tokens=None,
             )
         if request.alias == "verifier":
-            text = json.dumps({"verdict": "pass", "confidence": 0.8})
+            text = json.dumps({"verdict": "approve", "confidence": 0.8})
+            return ProviderGenerateResult(
+                success=True,
+                raw_text=text,
+                error_code=None,
+                error_message=None,
+                latency_ms=10,
+                input_tokens=5,
+                output_tokens=80,
+            )
         else:
             text = f"healthy response from {request.alias}"
         return ProviderGenerateResult(
@@ -179,7 +188,7 @@ async def test_council_later_stages_avoid_failed_upstream_provider_model(tmp_db,
             error_message=None,
             latency_ms=10,
             input_tokens=5,
-            output_tokens=7,
+            output_tokens=80,
         )
 
     with patch.object(worker, "_call_provider_async", side_effect=fake_provider):

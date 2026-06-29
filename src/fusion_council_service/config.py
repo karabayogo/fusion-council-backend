@@ -42,6 +42,26 @@ class Settings(BaseSettings):
     LANGGRAPH_THREAD_NAMESPACE: str = "fusion-council"
     LANGGRAPH_ENGINE_VERSION: str = "v1"
 
+    # Public base URL for client-facing responses. When set, create_run()
+    # and respond_sync() build absolute status_url values from this. When
+    # unset, the routes return relative paths (e.g. /v1/runs/{id}) so the
+    # internal HOST=0.0.0.0 bind address never leaks to clients.
+    # Strategic fix from RCA-6 of run-page live-streaming plan.
+    PUBLIC_BASE_URL: str = ""
+
+    # Per-stage max output token caps (RCA-4). Defaults follow the
+    # run-page live-streaming implementation plan (2026-06-29):
+    #   first_opinion: 1200, peer_review: 800, debate: 800,
+    #   synthesis: 1200, verification: 400.
+    # Stage code clamps to min(run.max_output_tokens, STAGE_TOKEN_CAPS[stage])
+    # so the user's run-level cap is always respected.
+    # JSON shape makes it env-tunable via STAGE_TOKEN_CAPS env var or
+    # GitOps values override.
+    STAGE_TOKEN_CAPS: str = (
+        '{"first_opinion": 1200, "peer_review": 800, '
+        '"debate": 800, "synthesis": 1200, "verification": 400}'
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @property
@@ -55,3 +75,38 @@ class Settings(BaseSettings):
     @property
     def service_admin_api_keys(self) -> list[str]:
         return [k.strip() for k in self.SERVICE_ADMIN_API_KEYS.split(",") if k.strip()]
+
+    @property
+    def stage_token_caps(self) -> dict[str, int]:
+        """Parse the STAGE_TOKEN_CAPS JSON string into a dict.
+
+        Returns sensible defaults if the value is malformed (defensive: we
+        never want a config typo to crash a production run).
+        """
+        defaults: dict[str, int] = {
+            "first_opinion": 1200,
+            "peer_review": 800,
+            "debate": 800,
+            "synthesis": 1200,
+            "verification": 400,
+        }
+        raw = (self.STAGE_TOKEN_CAPS or "").strip()
+        if not raw:
+            return defaults
+        try:
+            import json
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return defaults
+            out: dict[str, int] = {}
+            for k, v in parsed.items():
+                try:
+                    out[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+            # Merge with defaults so missing keys get safe values
+            for k, v in defaults.items():
+                out.setdefault(k, v)
+            return out
+        except Exception:
+            return defaults

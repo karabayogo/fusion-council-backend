@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fusion_council_service.clock import utc_now_iso
 from fusion_council_service.db import new_session, initialize_schema, execute_sql, execute_sql_all, commit_tx
@@ -52,19 +52,27 @@ def _apply_verification_result(
     current_confidence: float,
     verif_alias: str,
     run_id: str,
-) -> tuple[float, str]:
+) -> tuple[float, str, str]:
     """Apply a verification candidate result with the E2 short-output guard.
 
-    Returns (final_confidence, final_synthesis_text). Both council and fusion
-    paths funnel through here so the guard is consistent — never accept a
-    <MIN_VERIFICATION_TOKENS output as a verdict, never let a non-answer
-    depress the synthesis. If the output is suspiciously short, we mark the
-    candidate with error_code=VERIFICATION_TOO_SHORT, pin confidence=0.5, and
-    prepend [INSUFFICIENT EVIDENCE] to the synthesis. Otherwise we honor
-    the parsed verdict (abstain still prefixes the synthesis).
+    Returns (final_confidence, final_synthesis_text, verdict_action) where
+    verdict_action is one of:
+      - "ok": verdict is approve (or any non-reject/non-abstain); the run
+              should terminal-succeed with the synthesis as-is.
+      - "degraded": verdict is abstain OR the output was too short to trust;
+              the run should terminal-succeed_degraded with the INSUFFICIENT
+              EVIDENCE prefix visible to operators.
+      - "rejected": verdict is reject; the run MUST terminal-fail with
+              error_code=VERIFICATION_REJECTED. The synthesis text is returned
+              here so the caller can write it into error_message for audit,
+              but the caller MUST NOT use it as a final answer.
 
-    This is the E2 fix factored out of the inline council code so fusion
-    mode gets the same protection (PR #26 only patched the council path).
+    Both council and fusion paths funnel through here so the guard is
+    consistent — never accept a <MIN_VERIFICATION_TOKENS output as a verdict,
+    never let a non-answer depress the synthesis, and never let a `reject`
+    verdict pass through as a high-confidence success. The E2 fix (PR #26)
+    factored this out of the inline council code so fusion mode gets the
+    same protection.
     """
     verif_out_tokens = int(candidate.get("output_tokens") or 0)
     if verif_out_tokens < MIN_VERIFICATION_TOKENS:
@@ -86,18 +94,39 @@ def _apply_verification_result(
         return (
             0.5,
             f"[INSUFFICIENT EVIDENCE — confidence: 0.5] (verification rejected: {verif_out_tokens} tokens)\n{synthesis_text}",
+            "degraded",
         )
     try:
         parsed = _VerificationPayload.model_validate_json(raw_text)
         confidence = float(parsed.confidence)
-        if parsed.verdict.strip().lower() == "abstain":
+        verdict = parsed.verdict.strip().lower()
+        # Persist the parsed verification payload so the UI can render a
+        # structured card without re-parsing brittle raw text.
+        # Use a defensive try — if the column does not exist in an older
+        # schema, do not crash the run.
+        try:
+            execute_sql(
+                db,
+                "UPDATE run_candidates SET score_json=:sj WHERE candidate_id=:cid",
+                {"sj": parsed.model_dump_json(), "cid": cand_id},
+            )
+            commit_tx(db)
+        except Exception as _persist_exc:
+            logger.warning(
+                f"could not persist verification score_json to run_candidates: {_persist_exc}",
+                run_id=run_id,
+            )
+        if verdict == "abstain":
             return (
                 confidence,
                 f"[INSUFFICIENT EVIDENCE — confidence: {confidence}]\n{synthesis_text}",
+                "degraded",
             )
-        return (confidence, synthesis_text)
+        if verdict == "reject":
+            return (confidence, synthesis_text, "rejected")
+        return (confidence, synthesis_text, "ok")
     except Exception:
-        return (current_confidence, synthesis_text)
+        return (current_confidence, synthesis_text, "ok")
 
 
 # Thread pool for blocking provider calls
@@ -198,6 +227,12 @@ def build_provider_request(
 class _VerificationPayload(BaseModel):
     verdict: str
     confidence: float
+    # Optional fields added in the 2026-06-29 council RCA. Old verifiers that
+    # only return verdict+confidence still parse (defaults to [] / ""). The
+    # verifier prompt has always asked for these — we just didn't parse them
+    # before, so the UI had to scrape raw JSON.
+    issues: list[str] = Field(default_factory=list)
+    reasoning: str = ""
 
 
 def _run_provider_sync(
@@ -234,6 +269,7 @@ class Worker:
         orchestrator_langgraph_modes: str = "",
         langgraph_thread_namespace: str = "fusion-council",
         langgraph_engine_version: str = "v1",
+        stage_token_caps: Optional[dict] = None,
     ):
         self._db_path = db_path
         self._db_url = db_url
@@ -246,6 +282,19 @@ class Worker:
         self._db = None
         self._current_run_task: Optional[asyncio.Task] = None
         self._worker_id = f"worker-{int(time.time())}"
+        # RCA-4: per-stage max output token caps. Caller can pass an
+        # explicit dict (e.g. from Settings.stage_token_caps). Defaults
+        # follow the run-page live-streaming implementation plan.
+        self._stage_token_caps: dict = dict(
+            stage_token_caps
+            or {
+                "first_opinion": 1200,
+                "peer_review": 800,
+                "debate": 800,
+                "synthesis": 1200,
+                "verification": 400,
+            }
+        )
         self._router = OrchestrationEngineRouter(
             orchestrator_engine=orchestrator_engine,
             langgraph_modes=parse_langgraph_modes(orchestrator_langgraph_modes),
@@ -905,6 +954,7 @@ class Worker:
         cand_id = new_candidate_id()
         confidence = 0.5
         final_answer = synthesis_text
+        verdict_action = "ok"  # default: treat as approved when no candidate
         provider_result = await self._call_structured_provider_async(
             request,
             _VerificationPayload,
@@ -916,7 +966,7 @@ class Worker:
         )
         if candidate:
             raw_text = candidate.get("normalized_answer", "")
-            confidence, final_answer = _apply_verification_result(
+            confidence, final_answer, verdict_action = _apply_verification_result(
                 db=db,
                 cand_id=cand_id,
                 candidate=candidate,
@@ -926,6 +976,46 @@ class Worker:
                 verif_alias=verif_model["alias"],
                 run_id=run_id,
             )
+
+        # Reject verdict (RCA-2): never ship a rejected synthesis as a
+        # high-confidence success. Route to terminal-failed with the
+        # verification issues preserved in error_message.
+        if verdict_action == "rejected":
+            err_msg = (
+                f"Verifier {verif_model['alias']} rejected the synthesis "
+                f"(confidence={confidence}). See verification candidate "
+                f"score_json for issues."
+            )
+            update_run_status(
+                db,
+                run_id,
+                "failed",
+                final_answer=final_answer,
+                final_confidence=confidence,
+                error_code="VERIFICATION_REJECTED",
+                error_message=err_msg,
+            )
+            emit_run_failed(db, run_id, "VERIFICATION_REJECTED", err_msg)
+            _safe_log_pending_decision(db, run, "fusion", final_answer)
+            return
+
+        # Abstain / short-output (degraded): succeed with degraded reason.
+        if verdict_action == "degraded":
+            reason = (
+                f"verification={verif_model['alias']} "
+                f"verdict=abstain/insufficient"
+            )
+            update_run_status(
+                db,
+                run_id,
+                "succeeded_degraded",
+                final_answer=final_answer,
+                final_confidence=confidence,
+                degraded_reason=reason,
+            )
+            emit_run_succeeded_degraded(db, run_id, final_answer, reason, confidence=confidence)
+            _safe_log_pending_decision(db, run, "fusion", final_answer)
+            return
 
         update_run_status(
             db,
@@ -953,23 +1043,34 @@ class Worker:
         # Stage 1: first opinions (all models in parallel)
         self._emit_stage_started(db, run_id, "first_opinion", [m["alias"] for m in models])
 
+        # RCA-4: cap first_opinion max_output_tokens to the configured stage ceiling
+        fo_cap = min(
+            run["max_output_tokens"],
+            self._stage_token_caps.get("first_opinion", 1200),
+        )
         sem = asyncio.Semaphore(3)
+
         async def call_model(model):
             async with sem:
                 request = build_provider_request(
                     model,
                     system_prompt=run.get("system_prompt"),
                     user_prompt=run["prompt"],
-                    max_output_tokens=run["max_output_tokens"],
+                    max_output_tokens=fo_cap,
                     temperature=run["temperature"],
                 )
                 return model, await self._call_provider_async(request, db, run_id)
 
-        first_results = await asyncio.gather(*[call_model(m) for m in models])
-
-        first_opinions = []
-        for (model, request), result in zip([(m, None) for m in models], first_results):
-            _m, provider_result = result
+        # RCA-1: use as_completed so candidate.completed events stream in
+        # completion order, not after asyncio.gather() returns all siblings.
+        # This matches the fusion-mode pattern (lines 770-789) so the
+        # browser sees each candidate as it settles.
+        first_opinions: list[dict] = []
+        fo_tasks = [asyncio.create_task(call_model(m)) for m in models]
+        completed_count = 0
+        failed_count = 0
+        for task in asyncio.as_completed(fo_tasks):
+            model, provider_result = await task
             success, raw_text, err_code, err_msg, lat_ms, in_tok, out_tok = provider_result
             cand_id = new_candidate_id()
             m = model
@@ -983,6 +1084,7 @@ class Worker:
                                         latency_ms=lat_ms, input_tokens=in_tok, output_tokens=out_tok)
                 emit_candidate_completed(db, run_id, cand_id, m["alias"], "first_opinion")
                 first_opinions.append(get_candidate(db, cand_id) or {})
+                completed_count += 1
             else:
                 insert_candidate(db, run_id, cand_id, m["alias"], m["provider"],
                                  m["provider_model"], "first_opinion", "failed", utc_now_iso())
@@ -992,6 +1094,20 @@ class Worker:
                 update_candidate_result(db, cand_id, "failed", error_code=err_code, error_message=err_msg)
                 emit_candidate_failed(db, run_id, cand_id, m["alias"], "first_opinion", err_msg or err_code)
                 first_opinions.append(get_candidate(db, cand_id) or {})
+                failed_count += 1
+            # RCA-5 (incremental progress): update run status in-flight so
+            # /v1/runs/{id} shows non-zero progress before terminal completion.
+            # Cheap on SQLite; helps external observers.
+            try:
+                update_run_status(
+                    db,
+                    run_id,
+                    "running",
+                    models_completed=completed_count,
+                    models_failed=failed_count,
+                )
+            except Exception:
+                pass
 
         succeeded_opinions = [c for c in first_opinions if c.get("status") == "succeeded"]
 
@@ -1070,8 +1186,12 @@ class Worker:
             return
 
         # Stage 2: peer reviews
-# Stage 2: peer reviews
         # Build task list first so we know selected models before emitting stage.started
+        # RCA-4: cap peer_review max_output_tokens
+        pr_cap = min(
+            run["max_output_tokens"],
+            self._stage_token_caps.get("peer_review", 800),
+        )
         review_tasks = []
         for opinion_cand in succeeded_opinions:
             reviewer = self._select_stage_model(
@@ -1088,7 +1208,7 @@ class Worker:
                 reviewer,
                 system_prompt=None,
                 user_prompt=review_prompt,
-                max_output_tokens=run["max_output_tokens"],
+                max_output_tokens=pr_cap,
                 temperature=0.1,
             )
             review_tasks.append((reviewer, request))
@@ -1100,11 +1220,13 @@ class Worker:
             async with sem:
                 return model, await self._call_provider_async(req, db, run_id)
 
-        review_results = await asyncio.gather(*[call_review(m, r) for m, r in review_tasks]) if review_tasks else []
-
-        peer_reviews = []
-        for (model, request), result in zip(review_tasks, review_results):
-            _m, provider_result = result
+        # RCA-1: use as_completed for peer_review (mirrors first_opinion above).
+        # This is the same fan-out that was batching all peer-review events
+        # into a single burst — see RCA-1 of the run-page plan.
+        peer_reviews: list[dict] = []
+        pr_tasks = [asyncio.create_task(call_review(m, r)) for m, r in review_tasks] if review_tasks else []
+        for task in asyncio.as_completed(pr_tasks):
+            model, provider_result = await task
             cand_id = new_candidate_id()
             candidate = self._record_stage_candidate_result(db, run_id, cand_id, model, "peer_review", provider_result)
             if candidate:
@@ -1130,11 +1252,16 @@ class Worker:
             if debate_model is None:
                 logger.warning("No healthy debate model available; skipping debate", run_id=run_id)
             else:
+                # RCA-4: cap debate max_output_tokens
+                debate_cap = min(
+                    run["max_output_tokens"],
+                    self._stage_token_caps.get("debate", 800),
+                )
                 request = build_provider_request(
                     debate_model,
                     system_prompt=None,
                     user_prompt=debate_prompt,
-                    max_output_tokens=run["max_output_tokens"],
+                    max_output_tokens=debate_cap,
                     temperature=0.2,
                 )
                 cand_id = new_candidate_id()
@@ -1159,11 +1286,16 @@ class Worker:
             best = select_best_candidate(succeeded_opinions)
             synthesis_text = best.get("normalized_answer", "") if best else "Council synthesis failed."
         else:
+            # RCA-4: cap synthesis max_output_tokens
+            synth_cap = min(
+                run["max_output_tokens"],
+                self._stage_token_caps.get("synthesis", 1200),
+            )
             request = build_provider_request(
                 synth_model,
                 system_prompt=None,
                 user_prompt=synth_prompt,
-                max_output_tokens=run["max_output_tokens"],
+                max_output_tokens=synth_cap,
                 temperature=0.2,
             )
             cand_id = new_candidate_id()
@@ -1188,14 +1320,21 @@ class Worker:
         self._emit_stage_started(db, run_id, "verification", [verif_model["alias"]] if verif_model else [])
         verif_prompt = build_verification_prompt(run["prompt"], synthesis_text)
         confidence = 0.5
+        verdict_action = "ok"  # default when no verif_model is healthy
         if verif_model is None:
             logger.warning("No healthy verification model available; completing without verification", run_id=run_id)
         else:
+            # RCA-4: cap verification max_output_tokens (verifiers should
+            # be terse — 400 tokens is plenty for a verdict JSON).
+            verif_cap = min(
+                run["max_output_tokens"],
+                self._stage_token_caps.get("verification", 400),
+            )
             request = build_provider_request(
                 verif_model,
                 system_prompt=None,
                 user_prompt=verif_prompt,
-                max_output_tokens=500,
+                max_output_tokens=verif_cap,
                 temperature=0.1,
             )
             cand_id = new_candidate_id()
@@ -1208,7 +1347,7 @@ class Worker:
             candidate = self._record_stage_candidate_result(db, run_id, cand_id, verif_model, "verification", provider_result)
             if candidate:
                 raw_text = candidate.get("normalized_answer", "")
-                confidence, synthesis_text = _apply_verification_result(
+                confidence, synthesis_text, verdict_action = _apply_verification_result(
                     db=db,
                     cand_id=cand_id,
                     candidate=candidate,
@@ -1221,6 +1360,52 @@ class Worker:
 
         terminal_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'succeeded'", {"run_id": run_id}))
         failed_count = len(execute_sql_all(db, "SELECT candidate_id FROM run_candidates WHERE run_id = :run_id AND status = 'failed'", {"run_id": run_id}))
+
+        # Reject verdict (RCA-2): never ship a rejected synthesis as a
+        # high-confidence success. Route to terminal-failed.
+        if verdict_action == "rejected":
+            verif_label = verif_model["alias"] if verif_model else "unknown"
+            err_msg = (
+                f"Verifier {verif_label} rejected the synthesis "
+                f"(confidence={confidence}). See verification candidate "
+                f"score_json for issues."
+            )
+            update_run_status(
+                db,
+                run_id,
+                "failed",
+                final_answer=synthesis_text,
+                final_confidence=confidence,
+                models_completed=terminal_count,
+                models_failed=failed_count,
+                error_code="VERIFICATION_REJECTED",
+                error_message=err_msg,
+            )
+            emit_run_failed(db, run_id, "VERIFICATION_REJECTED", err_msg)
+            _safe_log_pending_decision(db, run, "council", synthesis_text)
+            return
+
+        # Abstain / short-output (degraded): succeed_degraded.
+        if verdict_action == "degraded":
+            verif_label = verif_model["alias"] if verif_model else "unknown"
+            reason = (
+                f"verification={verif_label} "
+                f"verdict=abstain/insufficient"
+            )
+            update_run_status(
+                db,
+                run_id,
+                "succeeded_degraded",
+                final_answer=synthesis_text,
+                final_confidence=confidence,
+                models_completed=terminal_count,
+                models_failed=failed_count,
+                degraded_reason=reason,
+            )
+            emit_run_succeeded_degraded(db, run_id, synthesis_text, reason, confidence=confidence)
+            _safe_log_pending_decision(db, run, "council", synthesis_text)
+            return
+
         update_run_status(
             db,
             run_id,

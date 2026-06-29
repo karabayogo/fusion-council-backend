@@ -152,7 +152,7 @@ async def test_council_all_first_opinions_succeed(
             # Backup (role_bias=backup, used in peer reviews and fallback)
             "backup": ("Backup model concurs with primary", 750, 18, 38),
             # Verifier (used in peer reviews, debate, and verification fallback)
-            "verifier": (verify_text, 500, 20, 40),
+            "verifier": (verify_text, 500, 20, 60),
         },
         failures={},
         fallback_responses={},
@@ -211,7 +211,7 @@ async def test_council_two_first_opinions_succeed_degrades_gracefully(
             # Synthesis
             "synthesizer": (synth_text, 600, 25, 50),
             # Verification (via structured fallback)
-            "verifier": (verify_text, 500, 20, 40),
+            "verifier": (verify_text, 500, 20, 60),
         },
         failures={
             "reviewer": ("HTTP_500", "Provider returned 500: server error"),
@@ -305,7 +305,7 @@ async def test_council_http_500_classified_not_masked_as_timeout(
             # Fallback models (save the run from quorum failure)
             "backup": ("Backup fallback answer", 850, 22, 42),
             "synthesizer": (synth_text, 600, 25, 50),
-            "verifier": (verify_text, 500, 20, 40),
+            "verifier": (verify_text, 500, 20, 60),
         },
         failures={
             "primary-researcher": (

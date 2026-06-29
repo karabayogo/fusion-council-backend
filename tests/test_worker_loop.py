@@ -305,7 +305,16 @@ async def test_verification_short_output_rejected_with_insufficient_evidence(moc
     final_row = tmp_db.execute(
         "SELECT status, final_confidence, final_answer FROM runs WHERE run_id = ?", (run_id,)
     ).fetchone()
-    assert final_row["status"] == "succeeded"
+    # The 2026-06-29 RCA-2 (run-page live-streaming plan) changes the
+    # short-verification terminal state from "succeeded" to
+    # "succeeded_degraded" so the operator sees a visible signal that
+    # the run's verdict could not be trusted. The synthesis is still
+    # preserved (with [INSUFFICIENT EVIDENCE] prefix) for audit, but
+    # the run no longer looks like a normal success.
+    assert final_row["status"] == "succeeded_degraded", (
+        f"short verification must yield succeeded_degraded (RCA-2), "
+        f"got {final_row['status']!r}"
+    )
     assert final_row["final_confidence"] == 0.5, (
         f"E2 bug: short verification verdict's confidence was accepted "
         f"(got {final_row['final_confidence']}, expected 0.5)"
@@ -372,7 +381,13 @@ async def test_fusion_short_verification_rejected_with_insufficient_evidence(moc
     final_row = tmp_db.execute(
         "SELECT status, final_confidence, final_answer FROM runs WHERE run_id = ?", (run_id,)
     ).fetchone()
-    assert final_row["status"] == "succeeded"
+    # RCA-2: short verification now yields succeeded_degraded (see comment
+    # in test_verification_short_output_rejected_with_insufficient_evidence
+    # above). Fusion path is consistent with council.
+    assert final_row["status"] == "succeeded_degraded", (
+        f"PR #28 + RCA-2: fusion short verification must yield succeeded_degraded, "
+        f"got {final_row['status']!r}"
+    )
     assert final_row["final_confidence"] == 0.5, (
         f"PR #28 regression: fusion path short verification confidence was accepted "
         f"(got {final_row['final_confidence']}, expected 0.5)"

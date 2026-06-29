@@ -69,7 +69,14 @@ async def test_fusion_verification_uses_structured_output_path(tmp_db, model_cat
 
     completed = get_run(tmp_db, run["run_id"])
     assert completed is not None
-    assert completed["status"] == "succeeded"
+    # RCA-2: short verification now yields succeeded_degraded (the new policy
+    # exposes the untrustworthy verdict visibly to operators instead of
+    # pretending it was a normal success). The final_confidence=0.5 and
+    # [INSUFFICIENT EVIDENCE] prefix are unchanged from PR #28.
+    assert completed["status"] == "succeeded_degraded", (
+        f"RCA-2: short verification must yield succeeded_degraded, "
+        f"got {completed['status']!r}"
+    )
     # _StructuredRegistry emits 7 output_tokens — same E2 short-output guard
     # that the council path uses (after _apply_verification_result() was
     # factored out in PR #28). The guard correctly rejects the verdict and
@@ -115,7 +122,12 @@ async def test_council_verification_uses_structured_output_path(tmp_db, model_ca
 
     completed = get_run(tmp_db, run["run_id"])
     assert completed is not None
-    assert completed["status"] == "succeeded"
+    # RCA-2: short verification now yields succeeded_degraded (consistent
+    # with the fusion path; see comment above for full policy).
+    assert completed["status"] == "succeeded_degraded", (
+        f"RCA-2: short verification must yield succeeded_degraded, "
+        f"got {completed['status']!r}"
+    )
     # E2 guard: short verification output (7 tokens) is rejected → confidence=0.5.
     assert abs(float(completed["final_confidence"]) - 0.5) < 1e-9, (
         f"E2 guard should pin final_confidence=0.5 for short verification; "

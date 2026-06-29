@@ -64,6 +64,23 @@ def get_settings() -> Settings:
     return _settings
 
 
+def _public_base_url() -> str:
+    """Return the public base URL for client-facing links.
+
+    Strategic fix from RCA-6 of run-page live-streaming plan (2026-06-29):
+    the create_run endpoint used to build URLs from HOST:PORT, which is
+    0.0.0.0:8080 inside the cluster — useless to clients. We now prefer
+    PUBLIC_BASE_URL when set, and fall back to a relative path so the
+    internal bind address never leaks.
+
+    Returns "" when PUBLIC_BASE_URL is unset; callers compose a relative
+    path in that case (e.g. /v1/runs/{id}).
+    """
+    if _settings is None:
+        return ""
+    return (_settings.PUBLIC_BASE_URL or "").rstrip("/")
+
+
 def get_api_registry() -> ProviderRegistry:
     if _registry is None:
         raise RuntimeError("Provider registry not initialized")
@@ -328,13 +345,23 @@ async def create_run(
     # Emit accepted event
     emit_run_accepted(db, run_id, body.mode, deadline_seconds)
 
-    base_url = f"http://{settings.HOST}:{settings.PORT}"
+    # RCA-6: use PUBLIC_BASE_URL when set, fall back to relative path
+    # (NEVER http://0.0.0.0:8080 — that leaks the internal bind address).
+    base = _public_base_url()
+    if base:
+        status_url = f"{base}/v1/runs/{run_id}"
+        events_url = f"{base}/v1/runs/{run_id}/events"
+        answers_url = f"{base}/v1/runs/{run_id}/answers"
+    else:
+        status_url = f"/v1/runs/{run_id}"
+        events_url = f"/v1/runs/{run_id}/events"
+        answers_url = f"/v1/runs/{run_id}/answers"
     return RunResponse(
         run_id=run_id,
         status="queued",
-        status_url=f"{base_url}/v1/runs/{run_id}",
-        events_url=f"{base_url}/v1/runs/{run_id}/events",
-        answers_url=f"{base_url}/v1/runs/{run_id}/answers",
+        status_url=status_url,
+        events_url=events_url,
+        answers_url=answers_url,
         suggested_poll_interval_ms=settings.SSE_POLL_INTERVAL_MS,
     )
 
@@ -628,8 +655,13 @@ async def respond_sync(
                       last_heartbeat_at=created_at)
     emit_run_accepted(db, run_id, body.mode, deadline_seconds)
 
-    base_url = f"http://{settings.HOST}:{settings.PORT}"
-    status_url = f"{base_url}/v1/runs/{run_id}"
+    base = _public_base_url()
+    if base:
+        status_url = f"{base}/v1/runs/{run_id}"
+        events_url = f"{base}/v1/runs/{run_id}/events"
+    else:
+        status_url = f"/v1/runs/{run_id}"
+        events_url = f"/v1/runs/{run_id}/events"
 
     # Poll for completion with timeout
     poll_interval = settings.SSE_POLL_INTERVAL_MS / 1000.0
@@ -673,7 +705,7 @@ async def respond_sync(
         "status": "timeout",
         "run_id": run_id,
         "status_url": status_url,
-        "events_url": f"{base_url}/v1/runs/{run_id}/events",
+        "events_url": events_url,
         "message": f"Wait timeout ({wait_timeout}s) reached. Poll {status_url} for result.",
     }, status_code=202)
 
