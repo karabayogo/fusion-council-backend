@@ -1,10 +1,63 @@
 """Event emitter — helpers for emitting SSE events during run execution."""
 
+from __future__ import annotations
+
+import json
+from typing import Any
+
 from fusion_council_service.clock import utc_now_iso
+from fusion_council_service.domain.candidate_repository import get_candidate
 from fusion_council_service.domain.event_repository import append_event
 from fusion_council_service.logging_utils import get_logger
 
 logger = get_logger("fusion_council_service.event_emitter")
+
+_THOUGHT_PREVIEW_CHARS = 280
+
+
+def _safe_json_object(raw: str | None) -> dict[str, Any] | None:
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _thought_preview(text: str) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= _THOUGHT_PREVIEW_CHARS:
+        return normalized
+    return normalized[: _THOUGHT_PREVIEW_CHARS - 1].rstrip() + "…"
+
+
+def _candidate_live_payload(db, candidate_id: str) -> dict[str, Any]:
+    candidate = get_candidate(db, candidate_id)
+    if not candidate:
+        return {}
+
+    payload: dict[str, Any] = {
+        "status": candidate.get("status"),
+        "provider": candidate.get("provider"),
+        "provider_model": candidate.get("provider_model"),
+        "latency_ms": candidate.get("latency_ms"),
+        "input_tokens": candidate.get("input_tokens"),
+        "output_tokens": candidate.get("output_tokens"),
+    }
+
+    raw_text = candidate.get("normalized_answer")
+    if isinstance(raw_text, str) and raw_text.strip():
+        payload["thought_content"] = raw_text
+        payload["thought_preview"] = _thought_preview(raw_text)
+        payload["thought_chars"] = len(raw_text)
+
+    score_json = candidate.get("score_json")
+    verification = _safe_json_object(score_json)
+    if verification:
+        payload["verification"] = verification
+
+    return payload
 
 
 def emit_event(db, run_id: str, event_type: str, payload: dict) -> dict:
@@ -73,9 +126,14 @@ def emit_run_cancelled(db, run_id: str) -> dict:
 
 
 def emit_candidate_completed(db, run_id: str, candidate_id: str, alias: str, stage: str) -> dict:
-    return emit_event(db, run_id, "candidate.completed", {
-        "run_id": run_id, "candidate_id": candidate_id, "alias": alias, "stage": stage,
-    })
+    payload = {
+        "run_id": run_id,
+        "candidate_id": candidate_id,
+        "alias": alias,
+        "stage": stage,
+    }
+    payload.update(_candidate_live_payload(db, candidate_id))
+    return emit_event(db, run_id, "candidate.completed", payload)
 
 
 def emit_candidate_failed(db, run_id: str, candidate_id: str, alias: str, stage: str, error: str) -> dict:

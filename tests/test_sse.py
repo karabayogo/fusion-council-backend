@@ -3,7 +3,9 @@
 import json
 import pytest
 
+from fusion_council_service.domain.candidate_repository import insert_candidate, update_candidate_result
 from fusion_council_service.domain.event_emitter import (
+    emit_candidate_completed,
     emit_run_accepted,
     emit_run_completed,
     emit_run_failed,
@@ -122,3 +124,45 @@ def test_sse_event_payload_parsed(tmp_db, run_with_events):
     payload = json.loads(completed["payload_json"])
     assert payload["final_answer"] == "final answer"
     assert payload["confidence"] == 0.95
+
+
+def test_candidate_completed_event_includes_live_reasoning_payload(tmp_db, run_with_events):
+    candidate_id = "cand_live_reasoning"
+    created_at = utc_now_iso()
+    insert_candidate(
+        db=tmp_db,
+        run_id=run_with_events,
+        candidate_id=candidate_id,
+        alias="verifier",
+        provider="test-provider",
+        provider_model="test-model",
+        stage="verification",
+        status="running",
+        created_at=created_at,
+    )
+    verification = {
+        "verdict": "abstain",
+        "confidence": 0.42,
+        "issues": ["Insufficient evidence"],
+        "reasoning": "Need one more source before confirming the claim.",
+    }
+    update_candidate_result(
+        tmp_db,
+        candidate_id,
+        "succeeded",
+        normalized_answer=json.dumps(verification),
+        score_json=json.dumps(verification),
+        latency_ms=123,
+        input_tokens=45,
+        output_tokens=67,
+    )
+
+    event = emit_candidate_completed(tmp_db, run_with_events, candidate_id, "verifier", "verification")
+
+    payload = event["payload"]
+    assert payload["candidate_id"] == candidate_id
+    assert payload["thought_content"] == json.dumps(verification)
+    assert payload["thought_preview"].startswith('{"verdict": "abstain"')
+    assert payload["verification"]["reasoning"] == verification["reasoning"]
+    assert payload["latency_ms"] == 123
+    assert payload["output_tokens"] == 67
