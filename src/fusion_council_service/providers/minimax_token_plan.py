@@ -40,7 +40,8 @@ class MiniMaxTokenPlanProvider:
             kwargs = {
                 "model": request.provider_model,
                 "max_tokens": effective_max_tokens,
-                "temperature": request.temperature,
+                # MiniMax's Anthropic-compatible API does not accept temperature;
+                # passing it causes "unexpected keyword argument" errors.
                 "messages": [{"role": "user", "content": request.user_prompt}],
             }
             if request.system_prompt:
