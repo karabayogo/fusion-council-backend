@@ -12,6 +12,7 @@ Usage:
 
 import os
 import re
+import time
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,7 +68,12 @@ def _detect_dialect():
 
 
 def get_engine():
-    """Get the SQLAlchemy Engine (initialized once)."""
+    """Get the SQLAlchemy Engine (initialized once).
+
+    Includes startup retry: when PostgreSQL isn't reachable yet (e.g. during
+    Longhorn CSI failover or pod restart cascade), we retry the initial
+    connection with exponential backoff instead of crashing immediately.
+    """
     global _engine, _SessionFactory
 
     if _engine is not None:
@@ -94,7 +100,41 @@ def get_engine():
             pool_timeout=30,
         )
         _SessionFactory = sessionmaker(bind=_engine)
-        logger.info(f"PostgreSQL engine initialized: {db_url.split(chr(64))[0]}@***")
+
+        # Startup connectivity check with retry — PostgreSQL may not be
+        # reachable yet after a Longhorn CSI failover, node reboot, or
+        # StatefulSet reschedule.  Without this, the process crashes on
+        # the first query and Kubernetes restarts it into a crash-loop.
+        if callable(getattr(_engine, "connect", None)):
+            _MAX_STARTUP_RETRIES = 10
+            _INITIAL_BACKOFF_S = 1
+            _MAX_BACKOFF_S = 30
+            _backoff = _INITIAL_BACKOFF_S
+            for attempt in range(1, _MAX_STARTUP_RETRIES + 1):
+                try:
+                    with _engine.connect() as conn:
+                        conn.execute(text("SELECT 1"))
+                    logger.info(
+                        f"PostgreSQL engine initialized: "
+                        f"{db_url.split(chr(64))[0]}@*** (attempt {attempt})"
+                    )
+                    break
+                except Exception as exc:
+                    if attempt == _MAX_STARTUP_RETRIES:
+                        logger.error(
+                            f"PostgreSQL unreachable after {_MAX_STARTUP_RETRIES} "
+                            f"startup retries — giving up: {exc}"
+                        )
+                        raise
+                    logger.warning(
+                        f"PostgreSQL startup retry {attempt}/{_MAX_STARTUP_RETRIES}: "
+                        f"{exc.__class__.__name__}: {exc}; "
+                        f"sleeping {_backoff}s"
+                    )
+                    time.sleep(_backoff)
+                    _backoff = min(_MAX_BACKOFF_S, _backoff * 2)
+        else:
+            logger.info(f"PostgreSQL engine initialized: {db_url.split(chr(64))[0]}@***")
     else:
         db_path = os.environ.get("DATABASE_PATH", ":memory:")
         if db_path != ":memory:":
