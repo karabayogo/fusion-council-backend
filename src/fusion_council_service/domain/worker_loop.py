@@ -807,17 +807,22 @@ class Worker:
             )
             pending_calls.append((model, request))
 
-        # Execute in parallel with semaphore to cap concurrency
-        # Use as_completed to emit events as each candidate finishes (not after all complete)
+        # Execute in parallel with semaphore to cap concurrency.
+        # Stagger initial calls by 2s to avoid hitting the same provider's
+        # rate limit simultaneously — all 3 minimax models share one API key.
         sem = asyncio.Semaphore(3)
+        _import_time_for_stagger = __import__("time")
         
-        async def call_with_sem(model, req):
+        async def call_with_sem(model, req, stagger_s=0):
+            if stagger_s > 0:
+                await asyncio.sleep(stagger_s)
             async with sem:
                 result = await self._call_provider_async(req, db, run_id)
                 return model, result
         
         # Create tasks but don't await all at once - process as they complete
-        tasks = [asyncio.create_task(call_with_sem(m, r)) for m, r in pending_calls]
+        tasks = [asyncio.create_task(call_with_sem(m, r, stagger_s=i * 2))
+                 for i, (m, r) in enumerate(pending_calls)]
         
         for task in asyncio.as_completed(tasks):
             model, provider_result = await task
