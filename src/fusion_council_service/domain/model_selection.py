@@ -368,6 +368,7 @@ def reconcile_provider_health_with_catalog(db: object, catalog: ModelCatalog) ->
 
 QUARANTINE_HEALTH_THRESHOLD = 0.3
 QUARANTINE_STREAK_REQUIRED = 3
+QUARANTINE_TTL_HOURS = 24  # auto-expire quarantine after 24h so transient outages don't lock out forever
 
 
 def evaluate_quarantine_transition(
@@ -445,7 +446,21 @@ def evaluate_quarantine_transition(
 
 
 def get_quarantined_pairs(db: object) -> set[tuple[str, str]]:
-    """Return the set of (provider, provider_model) pairs currently quarantined."""
+    """Return the set of (provider, provider_model) pairs currently quarantined.
+
+    Quarantine expires after QUARANTINE_TTL_HOURS so transient outages don't
+    permanently lock out models.  Expired rows are cleaned up here (idempotent).
+    """
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=QUARANTINE_TTL_HOURS)).isoformat()
+    # Auto-unquarantine expired entries
+    execute_sql(
+        db,
+        "UPDATE provider_health SET quarantined = 0, consecutive_low_health_count = 0, "
+        "quarantine_reason = NULL "
+        "WHERE quarantined = 1 AND quarantined_at < :cutoff",
+        {"cutoff": cutoff},
+    )
     rows = execute_sql_all(
         db,
         "SELECT provider, provider_model FROM provider_health WHERE quarantined = 1",
