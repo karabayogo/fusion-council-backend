@@ -73,6 +73,47 @@ class MiniMaxTokenPlanProvider:
                 error_code="TIMEOUT", error_message="MiniMax request timed out",
                 latency_ms=latency_ms, input_tokens=None, output_tokens=None,
             )
+        except anthropic.RateLimitError as e:
+            # 429 rate limit — retry with exponential backoff (up to 2 retries)
+            import random
+            for attempt in range(2):
+                delay = min(2 ** attempt + random.uniform(0, 1), 10)
+                logger.warning(
+                    f"MiniMax rate limited (429), retry {attempt+1}/2 in {delay:.1f}s",
+                    event_type="provider.rate_limit_retry",
+                )
+                time.sleep(delay)
+                try:
+                    effective_max_tokens = max(request.max_output_tokens, MINIMAX_MIN_MAX_TOKENS)
+                    kwargs = {
+                        "model": request.provider_model,
+                        "max_tokens": effective_max_tokens,
+                        "messages": [{"role": "user", "content": request.user_prompt}],
+                    }
+                    if request.system_prompt:
+                        kwargs["system"] = request.system_prompt
+                    response = self._stream_generate(kwargs)
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    return ProviderGenerateResult(
+                        success=True, raw_text=response["text"],
+                        error_code=None, error_message=None,
+                        latency_ms=latency_ms,
+                        input_tokens=response.get("input_tokens"),
+                        output_tokens=response.get("output_tokens"),
+                    )
+                except anthropic.RateLimitError:
+                    continue
+                except Exception as retry_e:
+                    break
+            # All retries exhausted
+            latency_ms = int((time.monotonic() - start) * 1000)
+            return ProviderGenerateResult(
+                success=False, raw_text=None,
+                error_code="RATE_LIMITED",
+                error_message=f"MiniMax rate limited after retries: {e}",
+                latency_ms=latency_ms, input_tokens=None, output_tokens=None,
+            )
+
         except Exception as e:
             latency_ms = int((time.monotonic() - start) * 1000)
             return ProviderGenerateResult(
