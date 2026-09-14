@@ -40,10 +40,44 @@ _registry: Optional[ProviderRegistry] = None
 
 
 def get_api_db():
+    """Return the shared API DB handle, self-healing a poisoned session.
+
+    2026-09-12 RCA: a SQLAlchemy Session is left needing a rollback after ANY
+    failed statement — most commonly when the PostgreSQL connection is dropped
+    underneath us (server restart, connection reset, Longhorn CSI failover of
+    the postgres volume). Because this session is process-global and long-lived,
+    ONE transient failure used to poison it for the entire process lifetime:
+    every later route call raised
+
+        PendingRollbackError: Can't reconnect until invalid transaction is
+        rolled back
+
+    and returned HTTP 500. Observed live: /v1/runs returned 500 for every
+    request until the pod was restarted, which broke the history page (no rows
+    -> no /runs/ links, so the UI hydration smoke failed) and every run-creating
+    smoke (mode-fusion smoke).
+
+    `Session.rollback()` is a cheap no-op on a healthy session, so doing it at
+    request entry clears any half-open transaction before we hand the session
+    out. If the rollback itself fails the session is unrecoverable and we build
+    a fresh one, so the process heals instead of 500ing until a restart.
+    """
     global _api_db
     if _api_db is None:
         if _settings is None:
             raise RuntimeError("Settings not initialized")
+        _api_db = new_session()
+        initialize_schema(_api_db)
+        return _api_db
+
+    try:
+        _api_db.rollback()
+    except Exception as exc:
+        logger.warning(
+            "API DB session unusable (%s: %s) — rebuilding session",
+            type(exc).__name__,
+            exc,
+        )
         _api_db = new_session()
         initialize_schema(_api_db)
     return _api_db
